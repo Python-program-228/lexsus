@@ -2,9 +2,7 @@
 
 > **"Your AI can change. Your work doesn't."**
 
-A local-first desktop application that lets a developer's in-progress AI coding session survive interruption — usage limits, crashes, provider outages, context limits, or a deliberate switch — by capturing real project state and handing the task to another agent.
-
-This document is the single, authoritative, end-to-end plan: technical architecture, tech stack, every feature, the complete end-user experience, security model, business model, risks, MVP, a phased build roadmap with milestones, and validation metrics.
+A local-first desktop application that connects your local coding work to **web AIs** (ChatGPT, Claude.ai, Gemini). When your local coding agent — like Claude Code — hits its usage limit, crashes, or you simply want to switch, the bridge captures the real state of your work and hands the task to a **web AI**, turning it into a real coding agent that can **read your files, write files, and run terminal commands** on your local machine.
 
 ---
 
@@ -17,7 +15,7 @@ This document is the single, authoritative, end-to-end plan: technical architect
 5. [Tech Stack](#5-tech-stack)
 6. [Full Feature List](#6-full-feature-list)
 7. [End-User Experience](#7-end-user-experience)
-8. [Agent Adapters](#8-agent-adapters)
+8. [Web AI Integration](#8-web-ai-integration)
 9. [Security Model](#9-security-model)
 10. [Business Model & Market](#10-business-model--market)
 11. [Risk Register](#11-risk-register)
@@ -31,90 +29,127 @@ This document is the single, authoritative, end-to-end plan: technical architect
 
 ## 1. Vision & Positioning
 
-**Core principle:** The AI should be replaceable. The user's work should not be.
+### Core Principle
+The AI should be replaceable. The user's work should not be.
 
-**Strong positioning (what we build):**
-> "A local-first AI continuity layer that lets developers move ongoing work between AI agents without losing project state."
+### What We Build
+A desktop app that sits between your local coding work and the **web AIs** you use in your browser (ChatGPT, Claude.ai, Gemini). It captures the real state of your project while you work locally, and when your local agent is interrupted, it **connects your PC to a web AI** and turns that web AI into a **working coding agent** on your machine — with real read, write, and terminal access.
 
-**Weak positioning (what we avoid):**
-> "When Claude reaches its limit, switch to ChatGPT." — too narrow, easy to copy, and sounds like a workaround.
+### Strong Positioning
+> "Hit your limit in Claude Code? Continue on ChatGPT — as a real coding agent on your machine, without losing project state."
 
-The product is the **neutral layer between models**, not "another coding agent." The strongest message is not "our AI is smarter," but *"We don't care which AI you use. Your work continues."*
+### Weak Positioning (What We Avoid)
+> "Copy your chat history between websites." — passive, no real agent capability, and easy to copy.
 
-**Tagline:** Your AI can change. Your work doesn't.
+### The Distinct Identity
+The product is **not another coding agent**. It is the **neutral bridge** that:
+- Lets any web AI operate on your local machine (read/write/run).
+- Preserves continuity when your local agent is interrupted.
+- Shows you exactly what the web AI is doing — which file it read, which it wrote, which command it ran.
+
+### Tagline
+> **Your AI can change. Your work doesn't.**
 
 ---
 
 ## 2. Problem & Core Insight
 
 ### The Problem
-AI coding agents increasingly perform real multi-step development: reading repositories, modifying files, running commands, debugging, testing, and implementing features. This creates a new dependency — developers give an AI an ongoing job rather than asking isolated questions.
+You work on a real coding task using **Claude Code** locally on your laptop. It reads your repo, edits files, runs commands, and makes real progress. Then, mid-task, it **stops**:
 
-If the agent stops halfway (usage limit, crash, outage, context limit), the developer may have to re-explain the project to another AI. The lost value is not chat history — it is **working context**: what was attempted, what was completed, why decisions were made, which files changed, what failed, and what remains.
+- You hit your **usage limit** (out of tokens).
+- It runs out of **context**.
+- It **crashes** or hangs.
+- The provider has an **outage**.
+- You simply want to **switch** to a different AI.
 
-> **Problem statement:** AI-assisted work can be interrupted because its context and execution are tied too closely to one provider.
+Now the working context — what was being attempted, what was completed, why decisions were made, which files changed, what failed, what remains — is **locked inside that local session**.
+
+To continue, you would normally have to either:
+1. Re-explain the entire project to another tool, or
+2. Paste chunks of context into a web AI, manually feed it your files, then manually copy its edits back into your project.
+
+The web AIs (ChatGPT, Claude.ai, Gemini) are extremely capable, but they **cannot touch your local machine**. They cannot read your actual files, write changes, or run your terminal. So they can't truly "take over" a coding task. The valuable part of the work — the state, the progress, the context — is stranded.
+
+> **Problem statement:** AI-assisted work can be interrupted because its context and execution are tied too closely to one agent, and web AIs cannot act on your local machine.
 
 ### The Core Insight
-Today's pattern: `USER → AI → CONVERSATION HISTORY`
+The **local project and task state** should be the source of truth — not any single AI's memory. A web AI should be able to act as a **real coding agent** on your machine, with read, write, and terminal access, while you keep using the familiar web chat interface you already trust.
 
-Proposed pattern: `USER → CONTINUITY BRIDGE → AI AGENTS`
+> **Pattern:** `YOU + Claude Code (local)` → **bridge** → `WEB AI (ChatGPT / Claude.ai / Gemini) acting as a coding agent`
 
-The local project and task state act as the persistent layer. Claude, Codex, Gemini, or another model becomes an **interchangeable worker**. The user cares about the task, not which provider currently performs it.
+The web AI becomes an **interchangeable worker**. The user cares about the task, not which AI performs it at any moment.
 
 ### Why Local-First Matters
-The local project is often more trustworthy than an AI's self-reported state. The bridge can inspect files, Git diffs, terminal output, build status, tests, package configuration, and database schema. This transfers **actual work state** rather than merely copying a conversation.
-
-Local-first also reduces privacy concerns and makes the product more attractive to professional and enterprise developers — sensitive source code need not pass through the company's own servers.
+The local project is more trustworthy than an AI's self-reported state. The bridge can inspect files, Git diffs, terminal output, build status, and tests. This lets it transfer **actual work state** rather than copying a conversation — and it lets a web AI operate on **real** files and commands, not a simulated environment.
 
 ---
 
 ## 3. Product Overview
 
 ### What It Is
-A local-first AI continuity layer that captures real project state and hands ongoing work between AI agents.
+A local-first desktop app that:
+1. **Watches and captures** the real state of your coding work (files, git, terminal) while you use Claude Code locally.
+2. When your local session is **interrupted** (limit, crash, context, or choice), builds a **handoff** from real project state.
+3. **Connects your local PC to a web AI** (ChatGPT, Claude.ai, Gemini) and turns it into a coding agent that can **read files, write files, and run terminal commands** on your machine.
+4. **Shows the web AI's activity live** — which file it read, which it wrote, which command it ran — like a coding agent's activity trace, grounded to real operations on disk.
 
 ### What It Is Not
 - Not a "limit bypass" tool.
-- Not a chatbot.
-- Not just a conversation saver (though it does archive sessions).
+- Not a chat-history copier.
+- Not browser automation that scrapes web pages.
+- Not a local coding agent itself.
 
-### Triggers (not just usage limits)
-Usage limits are the entry point, not the foundation. Other triggers include:
-- Provider outages
-- Context limits
-- Crashes / hangs
-- Poor performance
-- Model specialization
-- Privacy requirements
-- Cost optimization
-- Deliberate switching
+### Triggers (the entry points)
+- Usage limit reached on the local agent.
+- Context limit / long-running task.
+- Crash or provider outage.
+- Wanting to switch models / providers.
+- Privacy needs (keep some work on a specific model).
+- Cost optimization.
 
-### Killer Demonstration
-Claude is refactoring authentication. It changes eight files and stops. The bridge shows: **"Claude session interrupted — 64% progress — 8 files changed — 3 errors remaining."** The user selects **Continue with ChatGPT**. ChatGPT receives the handoff, inspects the project, and continues from the incomplete state.
-
-The demo succeeds if the user can genuinely continue **without re-educating the new AI**. That is more convincing than a dashboard, memory browser, or abstract architecture diagram.
+Limits are the **entry point**, not the foundation. The deeper value is turning web AIs into working coding agents and preserving continuity.
 
 ---
 
 ## 4. Architecture
 
-Four layers, from raw capture to delivered handoff:
+The system has two bridges: one captures local work, the other lets a web AI act on the local machine.
+
+### The Four Layers (State Capture → Delivery)
 
 | Layer | Purpose | What it stores / does |
 |-------|---------|-----------------------|
-| 1. **Session Archive** | Raw capture | Every PTY session's stdin/stdout, timestamps, exit codes |
-| 2. **Structured Project Memory** | Facts, not chat | Objective, decisions, failed attempts, constraints, changed files |
-| 3. **Context Compression** | Make state handoff-sized | LLM-summarized snapshot of Layer 2, sized for a fresh agent's context window |
-| 4. **Handoff Engine** | Translate + deliver | Formats Layer 3 into a destination-specific prompt and delivers it — launching a CLI agent, or handing to a web-chat UI (ChatGPT) via clipboard/extension autofill |
+| 1. **Session Archive** | Raw capture | Claude Code session stdin/stdout, timestamps, exit codes; project file/git/terminal events |
+| 2. **Structured Project Memory** | Facts, not chat | Objective, decisions, failed attempts, constraints, changed files, progress |
+| 3. **Context Compression** | Make state handoff-sized | LLM-summarized snapshot sized for a fresh web AI's context window |
+| 4. **Handoff Engine** | Translate + deliver | Formats Layer 3 into a web-AI prompt and establishes the coding-agent bridge |
+
+### Bridge A — Local Agent Capture
+- Claude Code runs locally. The bridge **wraps/observes** it via a PTY to capture what it reads, writes, and runs.
+- Every event streams to Layer 1 (Session Archive), cross-checked against the filesystem watcher and Git to confirm real changes (Layer 2).
+
+### Bridge B — Web AI Coding-Agent Bridge (the core)
+- A **browser extension** communicates with the desktop app over a local channel.
+- The bridge gives the web AI **tools** it can call:
+  - `read_file(path)`
+  - `write_file(path, content)`
+  - `run_command(cmd)` — executed in the local terminal/PTY
+  - `list_directory(path)`
+  - `git_status()` / `git_diff()`
+- Tool calls are executed **locally** by the Rust core, with permission checks. Results are injected back into the web chat via the extension.
+
+### Activity Trace
+- Every tool call the web AI makes is recorded and cross-checked against the filesystem watcher — so the trace shows what **actually happened** on disk, not what the AI merely claimed.
 
 ### Data Flow
-1. Agent runs inside a PTY → every event streams to Layer 1 (Session Archive).
-2. A fact-extractor interprets the archive into Layer 2 (Structured Project Memory), cross-checked against Git/file watchers.
-3. On interruption, Layer 3 compresses Layer 2 into a handoff-sized snapshot.
-4. Layer 4 formats it for the target destination and delivers it — launching a CLI agent with it as opening input, or handing it to a web-chat UI (ChatGPT) via clipboard/extension autofill.
+1. Claude Code works on the project → bridge captures state (Layer 1, cross-checked to Layer 2).
+2. On interruption, Layer 3 compresses the state into a handoff.
+3. Layer 4 formats it for the chosen web AI and, via the extension, starts a session with the handoff as opening context.
+4. The web AI acts as a coding agent through local tool execution, with every action shown in the live activity trace.
 
 ### The Technical Opportunity
-Different models have different context limits, tools, instruction formats, reasoning behavior, permissions, and agent architectures. A simple conversation copy is not enough. The opportunity is a **translation layer** that converts Agent A's state into a useful task representation for Agent B while grounding it against the actual local project.
+Different web AIs have different context limits, tool-format expectations, and behaviors. A simple conversation copy is not enough. The opportunity is a **translation + execution layer** that converts your local state into a useful task representation a web AI can act on, grounded against the real local project.
 
 ---
 
@@ -122,274 +157,174 @@ Different models have different context limits, tools, instruction formats, reas
 
 ### Application Shell — Tauri
 - **Tauri** with a **Rust core** and **React / TypeScript** frontend.
-- Chosen over Electron: smaller binary, native OS-level access without bundling Chromium + Node, and a materially smaller attack surface — critical since this app touches source code, git history, and potentially secrets.
+- Chosen over Electron: smaller binary, native OS-level access without bundling Chromium + Node, and a smaller attack surface — critical since the app executes commands and reads source on the user's machine.
 
 ### System / OS Layer — Rust Only
 | Concern | Technology |
 |---------|------------|
 | File watching | OS-native watchers (fsevents / inotify / ReadDirectoryChangesW) |
-| Git operations | `git2` (Rust bindings to libgit2) — diffs, status, branch/commit state |
-| Process / PTY control | `portable-pty` — spawn/control CLI agents with full stdin/stdout/stderr |
-| SQLite access | `rusqlite` (Rust bindings) |
+| Git operations | `git2` (libgit2) — diffs, status, branch/commit state |
+| Terminal / command exec | `portable-pty` — run commands and observe output |
+| SQLite access | `rusqlite` |
 
 ### Local State — SQLite
-Layers 1 and 2 both live in embedded SQLite — zero ops, fully local, no server dependency.
+Session archive (Layer 1) and structured memory (Layer 2) live in embedded SQLite — zero ops, fully local, no server dependency.
 
 ### Compression — Python + FastAPI
-A local microservice on localhost doing LLM-based state compression with LangChain. The one layer where an LLM call is the tool, not the OS layer — kept isolated from the Rust core.
+A local microservice for LLM-based context compression (Layer 3), isolated from the Rust core, called over localhost.
 
-### Agent Communication — CLI Wrapping (PTY), Not Browser Automation
-Claude Code, Codex CLI, and Gemini CLI are spawned as child processes inside a PTY controlled by the Rust core. The app injects handoff context as the opening input and passively observes terminal output for interruption detection and activity tracking.
+### Local Agent Capture — CLI Wrapping (PTY)
+Claude Code (the local source agent) is spawned/observed inside a PTY controlled by the Rust core to capture stdin/stdout and tool activity.
 
-For **web-chat destinations (e.g. ChatGPT web)**, delivery differs: the bridge writes the handoff to the clipboard and uses a small browser extension to paste it into the web UI — it does not launch a CLI process. See [§8 Agent Adapters](#8-agent-adapters) for the mechanism and platform-risk caveats.
+### Web AI Bridge — Browser Extension + Local IPC
+- A **browser extension** (Chrome/Firefox) talks to the desktop app over a localhost/local channel (native messaging or WebSocket).
+- The extension injects the handoff into the web chat and relays **tool calls** between the web AI and the local Rust core.
 
 ### Why Not C for the OS Layer
-Rust already provides C-level OS control with memory safety. Given direct access to source code, credentials, and shell execution, the security cost of C (buffer overflows, manual memory management, FFI complexity) outweighs any negligible performance gain. **One systems language, not two.**
+Rust provides C-level OS control with memory safety. Given the app executes commands and reads source, the security cost of C (buffer overflows, manual memory management, FFI complexity) outweighs any gain. **One systems language, not two.**
 
 ### Frontend Conventions
 - React + TypeScript + Vite (Tauri default template).
-- State management and component conventions established during Phase 0.
 - All UI state derives from events pushed by the Rust core over Tauri's IPC.
 
 ---
 
 ## 6. Full Feature List
 
-### Core Capture
-- **F1 — PTY Session Capture:** Record every CLI agent session's stdin/stdout with timestamps and exit codes (Layer 1).
-- **F2 — Session Archive:** Store raw sessions in SQLite, fully local.
+### Local Capture (Claude Code)
+- **F1 — PTY Session Capture:** Record Claude Code's stdin/stdout, timestamps, exit codes.
+- **F2 — Session Archive:** Store raw sessions locally (Layer 1).
+- **F3 — Fact Extraction:** Derive objective, decisions, failed attempts, constraints, changed files.
+- **F4 — Grounding Signals:** Cross-check Git diffs, file mtimes, terminal output, test/build status.
 
-### Structured Memory
-- **F3 — Fact Extraction:** Derive structured facts from sessions: objective, decisions, failed attempts, constraints, changed files.
-- **F4 — Project Memory Store:** Persist structured memory in SQLite (Layer 2).
-- **F5 — Grounding Signals:** Cross-reference Git diffs, file mtimes, terminal output, test/build status to validate actual state.
+### Web AI Coding-Agent Tools
+- **F5 — read_file:** Web AI reads a local file.
+- **F6 — write_file:** Web AI writes/edits a local file.
+- **F7 — run_command:** Web AI runs a terminal command locally.
+- **F8 — list_directory / git_status / git_diff:** Additional read and repo operations.
+- **F9 — Tool-result relay:** Results of local tool calls returned to the web AI via the extension.
 
-### Context Compression
-- **F6 — Snapshot Compression:** Compress structured state into a context-window-sized summary (Layer 3) via local LLM microservice.
-- **F7 — Relevance Retrieval:** Retrieve only task-relevant state instead of sending an enormous history.
-
-### Handoff
-- **F8 — Provider Prompt Formatting:** Format compressed state into a provider-specific prompt (Layer 4).
-- **F9 — Agent Launch:** Spawn the next agent with handoff context as opening input.
-- **F10 — Handoff Card:** A summary of progress ("64% progress, 8 files changed, 3 errors remaining") with a "Continue with [agent]" action.
+### Context & Handoff
+- **F10 — Snapshot Compression:** Compress structured state into a handoff-sized summary (Layer 3).
+- **F11 — Handoff Prompt:** Format compressed state for the chosen web AI (Layer 4).
+- **F12 — Handoff Card:** "Claude Code interrupted — 64% progress — 8 files changed — 3 errors remaining" with "Continue with ChatGPT / Claude.ai / Gemini."
 
 ### UI — Live Activity Trace
-- **F11 — Step Tree:** Render observed actions as a live, collapsible step tree.
-- **F12 — Cross-Correlation:** Only show "wrote a file" when both parsed PTY output *and* the filesystem watcher confirm the change.
-- **F13 — Headroom Collapsing:** Default collapsed state (only latest 2–3 steps expanded; older steps collapse to one summary line).
-- **F14 — Reserved Outcome Space:** Live "what's happening now" line and handoff summary always keep guaranteed space.
-- **F15 — Auto-Promotion:** On interruption, step data collapses directly into the handoff card — nothing re-derived.
-- **F16 — Expand-on-Demand:** Click any collapsed group to re-expand its steps.
+- **F13 — Step Tree:** Show every action as a live, collapsible tree: which file read, which written, which command ran.
+- **F14 — Cross-Correlation:** Only show "wrote a file" when both the reported action *and* the filesystem watcher confirm it.
+- **F15 — Headroom Collapsing:** Latest 2–3 steps expanded; older collapse to one summary line.
+- **F16 — Reserved Outcome Space:** Current action and handoff summary always visible.
+- **F17 — Auto-Promotion:** On interruption, step data collapses into the handoff card.
+- **F18 — Expand-on-Demand:** Click a collapsed group to re-expand.
 
 ### Continuity Controls
-- **F17 — Manual Interruption:** Explicit trigger producing a handoff card.
-- **F18 — Continue With...:** Deliver the task to another destination from the handoff card — e.g., Claude Code → ChatGPT (web) or Claude Code → Codex CLI.
-- **F19 — Automatic Failover (later):** Detect interruption and offer/proceed with failover.
+- **F19 — Manual Interruption:** Explicit trigger → handoff card.
+- **F20 — Continue on Web AI:** Choose ChatGPT / Claude.ai / Gemini and connect.
+- **F21 — Automatic Failover (later):** Detect interruption and offer to connect a web AI.
 
 ### Security
-- **F20 — Explicit Permissions:** Granular file/command/network permissions.
-- **F21 — Sandboxing:** Isolate agent execution and bridge processes.
-- **F22 — Secrets Protection:** Protect API keys, env vars, SSH config, credentials.
-- **F23 — Encryption & Local Storage:** Encrypted local storage options.
-- **F24 — Audit Logs:** Log actions for review; enterprise compliance-ready.
-- **F25 — Data Policy Clarity:** Clear, documented data handling.
+- **F22 — Explicit Permissions:** Granular read/write/command/network permissions per tool.
+- **F23 — Sandboxing:** Isolate command execution.
+- **F24 — Secrets Protection:** Protect API keys, env vars, SSH config.
+- **F25 — Encryption & Local Storage:** Encrypted local storage.
+- **F26 — Audit Logs:** Record every read/write/command for review.
+- **F27 — Command Approval (optional):** Prompt before sensitive commands.
 
 ### Team / Enterprise (later)
-- **F26 — Shared State:** Shared project state and handoffs for teams.
-- **F27 — Roles & Permissions:** SSO, role-based access control.
-- **F28 — Centralized Policies:** Organization-wide agent/compliance policies.
-- **F29 — Self-Hosting:** Local/self-hosted deployment options.
-- **F30 — Analytics & Auditability:** Usage, handoff, and audit reporting.
-
-### Orchestration (long-term)
-- **F31 — Model Routing:** Decide which agent should perform a task while preserving a single project state.
-- **F32 — Multi-Model Workflow:** Planning with one model, coding with another, review with another, sensitive work with a local model.
+- **F28 — Shared State:** Shared project state and handoffs for teams.
+- **F29 — Roles & Permissions:** SSO, RBAC.
+- **F30 — Centralized Policies:** Organization-wide tool/command policies.
+- **F31 — Self-Hosting:** Local/self-hosted deployment.
 
 ---
 
 ## 7. End-User Experience
 
-### 7.1 Distribution & Installation
+### 7.1 Installation
+- Install the desktop app (Tauri installer per OS: `.deb`/`.AppImage` on Linux, `.dmg` on macOS, `.msi`/`.exe` on Windows).
+- Install the **browser extension** (Chrome/Firefox) and pair it with the desktop app.
 
-**Installers per OS** (produced by Tauri bundler):
-- **Linux:** `.deb`, `.rpm`, `.AppImage`, `.tar.gz`
-- **macOS:** `.dmg` (and `.app` bundle)
-- **Windows:** `.msi`, `.exe` (NSIS)
+### 7.2 Onboarding
+1. **Welcome** — "Your AI can change. Your work doesn't."
+2. **Privacy promise** — everything local by default; you approve tool access.
+3. **Select project** — choose the folder you're working on.
+4. **Detect local agents** — the app detects Claude Code (and optionally Codex CLI) on your machine.
+5. **Permissions** — grant file read/write, command execution, and extension pairing, with granular toggles.
+6. **Pair extension** — the browser extension connects to the desktop app.
 
-**System requirements:**
-- A supported desktop OS (Linux/macOS/Windows).
-- Node.js runtime is **not** required for end users (bundled in Tauri).
-- Rust toolchain is **not** required for end users.
-- CLI agents (Claude Code, Codex CLI, Gemini CLI) installed and authenticated on the machine.
-- Reasonable disk space for SQLite archives and memory store.
+### 7.3 Working with Claude Code Locally
+- You launch Claude Code through the bridge (or the bridge observes it).
+- The bridge builds the **live activity trace** as Claude works: files read, files written, commands run, tests passing/failing.
 
-**Install flow:**
-1. User downloads the installer for their OS.
-2. Runs it (double-click on Windows/macOS; `chmod +x` + run on Linux).
-3. Installs to the standard application directory.
-4. Launches from the OS app launcher / dock / Start menu / Applications folder.
+### 7.4 Interruption
+- Claude Code hits its limit (or crashes, or you stop it).
+- The bridge shows a **handoff card** from real state:
+  > "Claude Code interrupted — 64% progress — 8 files changed — 3 errors remaining — objective: implement auth — next step: build login form."
 
-**Updates:** Tauri auto-updater delivers signed updates; users are prompted to restart to apply.
+### 7.5 Connecting a Web AI as a Coding Agent
+- You click **"Continue with ChatGPT"** (or Claude.ai, or Gemini).
+- The bridge compresses the state and, via the browser extension, opens the web AI with the handoff as context.
+- The web AI can now **call tools**: `read_file`, `write_file`, `run_command` — executed locally by the Rust core, results returned into the web chat.
+- You see it work, and the **live activity trace** updates:
+  - "ChatGPT read auth.ts"
+  - "ChatGPT wrote auth.ts"
+  - "ChatGPT ran npm test → 2 failing"
+- You can **approve sensitive commands** if you enabled that permission.
+- The web AI continues the task — you do not re-explain the project.
 
-### 7.2 First-Run Onboarding (screen by screen)
-
-**Screen 1 — Welcome**
-- Branding: "Your AI can change. Your work doesn't."
-- One-paragraph explanation of what the bridge does.
-- Buttons: **Get Started**, **Skip Intro**.
-
-**Screen 2 — Privacy Promise**
-- Plain-language: everything stays local; no source code leaves your machine by default.
-- Link to full privacy policy and security model.
-- Buttons: **Continue**, **View Security Details**.
-
-**Screen 3 — Select Project**
-- Folder picker to choose the project to monitor (MVP: one project; later: multiple).
-- Shows detected VCS (e.g., Git) and lets the user confirm.
-- Buttons: **Choose Folder**, **Use Current Folder**, **Back**.
-
-**Screen 4 — Detect Agents**
-- Scans for installed CLI agents (Claude Code, Codex CLI, Gemini CLI).
-- Shows detected agents with versions; lets user enable/disable each.
-- Buttons: **Continue**, **Re-scan**.
-
-**Screen 5 — Permissions**
-- Explains what the bridge accesses: file changes, git state, terminal sessions, agent launch.
-- Granular toggles (file watching, git, launching agents, network for LLM compression).
-- Buttons: **Grant & Finish**, **Back**.
-
-**Screen 6 — Dashboard (done)**
-- The user lands on the Home dashboard with a "Start session" call to action.
-
-### 7.3 Home / Dashboard
-
-**Layout:**
-- **Sidebar:** project(s), session history, settings.
-- **Main panel:** 
-  - "Start a new session" button.
-  - "Continue last session" (if an interrupted session exists).
-  - Recent sessions list with status chips (Completed / Interrupted / Running).
-  - Activity summary cards (files changed, errors, progress).
-
-**Status bar:** current agent, session state, watcher status, compression-service status.
-
-### 7.4 Running an Agent Session
-
-**Starting a session:**
-1. User clicks **Start session**.
-2. Picks an agent (e.g., Claude Code) from installed agents.
-3. Types the task/objective (optional — agent can ask).
-4. Clicks **Launch**. The bridge spawns the agent inside a PTY.
-
-**While running:**
-- The user sees the **live activity trace** (step tree) in the main panel.
-- A live PTY/terminal pane is available to interact with the agent directly.
-- The user can watch progress, expand/collapse steps, and intervene.
-
-**Monitoring:**
-- Each observed action becomes a node in the step tree, cross-validated by the filesystem watcher.
-- The "what's happening now" line stays pinned at the bottom.
-
-### 7.5 Live Activity Trace UI
-
-```
-▾ Session: Refactor auth (Claude Code)
-        Reading auth.ts
-        Reading db/schema.sql
-    ✏   Editing auth.ts           [3 lines changed]
-    ▾     Running: npm test
-        ❌ 2 failing — auth.test.ts
-    ✏   Editing auth.test.ts
-    ▾     Running: npm test
-        ✅ All passing
-```
-
-**Headroom collapsing:**
-- Default: only the current / most recent 2–3 steps expanded.
-- Older steps auto-collapse into one line: "12 earlier steps — 6 files touched, 1 error resolved."
-- Clicking a collapsed group re-expands it (expand-on-demand).
-- The outcome summary always keeps guaranteed space at the bottom.
-
-### 7.6 Interruption & Handoff — the core experience
-
-**Manual interruption:**
-1. User clicks **Stop / Interrupt** (or the session is interrupted by a crash/limit/outage).
-2. The bridge consolidates state from the step tree.
-3. A **handoff card** appears:
-   - Progress summary: "64% progress, 8 files changed, 3 errors remaining."
-   - Current objective.
-   - Completed work, unfinished work, decisions, failed approaches, next recommended action.
-   - Buttons: **Continue with [ChatGPT]**, **Continue with [Codex CLI]**, **Continue with [Gemini CLI]**, **Edit context**, **Discard**.
-
-**Continue with ChatGPT (web):**
-1. User selects **ChatGPT**.
-2. The bridge compresses/translates the state (Layer 3 + Layer 4) into a ChatGPT-appropriate handoff prompt.
-3. The bridge writes the handoff to the clipboard and (via a small browser extension) pastes it into ChatGPT's web textbox and clicks Send.
-4. The user gives ChatGPT the go-ahead; ChatGPT receives the handoff, the user pastes relevant context / points it at the local project, and it continues — the developer does not re-explain the project from scratch.
-
-**Continue with another CLI agent (e.g. Codex CLI):**
-1. User selects the target agent.
-2. The bridge compresses/translates the state (Layer 3 + Layer 4).
-3. The new agent launches with the handoff context as its opening input.
-4. The new agent inspects the project and continues — the developer does not re-explain.
-
-**Auto-promotion:**
-- On interruption, the same step data collapses directly into the handoff card — nothing is re-derived.
+### 7.6 The Web AI's "Thinking" View
+- Like ChatGPT's `> thinking` animation, the bridge shows what the web AI is doing *with your machine* — grounding its activity in real file operations and command output, not just prose.
+- You always know which file it read, which it wrote, and which command it ran.
 
 ### 7.7 Settings
-
 - **General:** theme, language, launch-at-startup, notifications.
 - **Projects:** add/remove monitored folders, per-project settings.
-- **Agents:** detect/enable/disable agents, set preferred ordering.
-- **Privacy & Security:** permissions toggles, audit log viewer, clear data, export/delete archives.
+- **Local Agents:** detect/enable/disable Claude Code, Codex CLI.
+- **Web AI Integration:** enable ChatGPT / Claude.ai / Gemini, extension pairing.
+- **Privacy & Security:** permissions toggles, command approval, audit log viewer, clear/export data.
 - **Compression:** configure LLM provider/model for the compression service.
 - **Updates:** check for updates, auto-update toggle.
 - **About:** version, licenses, links.
 
 ### 7.8 Ongoing-Use Patterns
-- **Continuation after crash:** the bridge detects a crashed/hung session and offers a handoff card even without user action.
-- **Scheduled/long tasks:** the bridge keeps state so a long task can resume later.
-- **Multi-model workflow (later):** plan with one model, code with another, review with another.
+- **Continuation after crash:** the bridge detects a crashed/hung local session and offers a handoff even without user action.
+- **Scheduled/long tasks:** the bridge keeps state so a long task can resume later on a web AI.
+- **Multi-AI workflow (later):** plan with one AI, code with another, review with another — each acting on your local machine.
 
 ---
 
-## 8. Agent Adapters
+## 8. Web AI Integration
 
-The core scenario is: a coding agent (e.g. Claude Code) hits its limit, and the task is handed to **ChatGPT (web)** — the docs' named killer demo is "Continue with ChatGPT." Web chat is therefore a **primary handoff destination**, not an afterthought. The critical question is *how* the bridge talks to ChatGPT's web UI.
+The bridge turns a web chat AI into a coding agent through a **browser extension + local IPC**:
 
-| Phase | Agent / Destination | Interface |
-|-------|--------------------|-----------|
-| MVP (source) | Claude Code | PTY wrapper |
-| MVP (handoff) | **ChatGPT (web UI)** | **Clipboard / extension autofill** |
-| MVP (handoff alt) | Codex CLI | PTY wrapper |
-| Phase 2 | Gemini CLI | PTY wrapper |
-| Phase 2 | Local models (Ollama etc.) | CLI / local API |
-| Later | Official APIs / MCP | Stable interfaces (preferred over browser automation) |
-| Experimental only | Web chat (Claude.ai, etc.) | Clipboard / extension autofill — **not** DOM scraping |
+1. **Extension injects handoff** into the web chat (ChatGPT/Claude.ai/Gemini) as the opening context.
+2. **Tool calls** — the web AI requests to read/write/run — are captured by the extension and forwarded to the desktop app's Rust core over a localhost channel.
+3. **The Rust core executes** the tool call locally (with permission checks) and returns the result via the extension into the web chat.
+4. **The activity trace** records every call, cross-validated by the filesystem watcher.
 
-### How the bridge reaches ChatGPT's web UI
+### Mechanism Notes
+- **Preferred:** extension autofill + local IPC tool relay — stable, user-in-the-loop, keeps you in control of what runs on your machine.
+- **Avoided as core:** DOM scraping / full browser automation — fragile (10/10 platform risk). The extension approach keeps the app's core independent of web-UI scraping.
 
-The Structured Plan trade-off table and Validation §13 settle the mechanism:
-
-- **Chosen: Clipboard / extension autofill** — the bridge writes the handoff context to the clipboard; a small browser extension (or the user) pastes it into ChatGPT's textbox and clicks Send. The bridge reads the response back via the extension.
-- **Rejected as core: Browser automation / DOM scraping** — a bot that opens ChatGPT, finds the textbox, pastes, and clicks Send is a fragile foundation. It depends on UI structure, authentication, CAPTCHA, rate limits, anti-automation measures, and provider policies. Flagged **10/10 platform risk**.
-
-**Platform dependency principle:** Prioritize official APIs, supported integrations, CLI tools, and MCP wherever possible. Browser automation is experimental only and must never be the core dependency. For ChatGPT web specifically, the bridge uses clipboard/extension autofill — never the core depending on DOM scraping.
+### Tool Execution Policy
+- Every tool call is subject to the user's configured permissions.
+- Commands flagged sensitive can require explicit approval before execution.
+- All tool calls are logged to the audit trail.
 
 ---
 
 ## 9. Security Model
 
-A local coding bridge may see source code, API keys, environment variables, databases, SSH configuration, private repositories, and customer data. A compromised bridge is extremely dangerous. Security is therefore a **product requirement, not an add-on**.
+The app can read source, write files, and run commands. This is powerful and dangerous. Security is a **product requirement**, not an add-on.
 
-- **Explicit permissions** — user controls what the bridge and agents can access.
-- **Sandboxing** — isolate agent and bridge execution.
-- **File & command controls** — restrict which files/commands are accessible.
+- **Explicit per-tool permissions** — read/write/command each gated.
+- **Command approval** — optional confirmation for sensitive commands.
+- **Sandboxing** — isolate command execution.
 - **Secrets protection** — never log or leak keys/credentials.
-- **Encryption** — encrypted local storage; encrypted transport where applicable.
-- **Audit logs** — record actions for accountability.
+- **Encryption & local storage** — encrypted archives and memory.
+- **Audit logs** — every read/write/command recorded for review.
 - **Clear data policies** — documented local-first guarantees.
-- **Enterprise-grade** (later): SSO, compliance controls, centralized policies.
+- **Enterprise-grade** (later): SSO, compliance, centralized policies.
 
 ---
 
@@ -398,24 +333,24 @@ A local coding bridge may see source code, API keys, environment variables, data
 ### Target Customers
 | Segment | Profile |
 |---------|---------|
-| **Initial** | AI-heavy individual developers who regularly use multiple coding agents; already feel the pain; adopt desktop tools quickly |
+| **Initial** | AI-heavy developers using Claude Code / local agents who hit limits and want to continue on web AIs |
 | **Next** | Professional teams needing shared context, handoffs, auditability, model choice |
-| **Long-term** | Enterprises requiring self-hosted/local deployment, SSO, permissions, encryption, audit logs, compliance, private models, centralized policies |
+| **Long-term** | Enterprises requiring self-hosted deployment, SSO, permissions, compliance |
 
 ### Pricing Tiers
 | Tier | Price | Includes |
 |------|-------|----------|
-| **Free** | $0 | Basic local continuity, limited integrations |
-| **Pro** | ~$10–$30/mo | Unlimited project memory, multiple providers, advanced handoffs, context management |
+| **Free** | $0 | Basic local continuity, limited web-AI tool access |
+| **Pro** | ~$10–$30/mo | Unlimited project memory, multiple web AIs, advanced handoffs, command approval |
 | **Team** | ~$20–$50+/user/mo | Shared state, permissions, analytics, audit |
 | **Enterprise** | Custom | Self-hosting, security, SSO, compliance, dedicated support |
 
 Prices must be validated through willingness-to-pay tests. The value proposition is **time saved and continuity**, not merely access to another AI.
 
 ### Competitive Landscape
-Highly competitive: Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Roo Code, Continue, Aider, and others. The opportunity is **not another coding agent** but a **neutral layer** that keeps work continuous across agents.
+Competitive: Claude Code, Codex, Cursor, Cline, Roo Code, and others. The opportunity is **not another agent** — it is the **neutral bridge** that lets web AIs act as coding agents on your machine and preserves continuity across interruptions.
 
-**Biggest competitive threat:** The AI providers themselves. OpenAI, Anthropic, and Google can build increasingly persistent agent environments, but have little strategic incentive to make leaving their ecosystem effortless. A neutral company has an incentive to connect competing ecosystems — the central strategic opportunity.
+**Biggest competitive threat:** AI providers building increasingly persistent agent environments. Counter: a neutral bridge connecting web AIs to local machines is the strategic opportunity.
 
 ---
 
@@ -423,81 +358,70 @@ Highly competitive: Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Roo
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
-| **Platform dependency (browser automation)** | 10/10 | Use PTY/CLI, official APIs, MCP; browser automation experimental only |
-| **Security / secret exposure** | 9/10 | Permissions, sandboxing, secrets protection, encryption, audit logs |
-| **Limits disappear** (provider raises usage limits) | High | Limits are entry point only; continuity valued for switching, outages, context, privacy, cost, long tasks |
-| **Initial defensibility** | 4/10 | Basic idea is copyable; build moat fast |
-| **Potential defensibility** | 7/10 | Deep integrations, reliable state extraction, context compression, permissions, local security, workflow switching costs |
-| **Technical difficulty (reliable continuation)** | 7/10 | Translation layer grounding Agent A state for Agent B against actual local project |
-| **Competition** | 8/10 | Neutral-layer positioning; deep workflow integration |
+| **Platform dependency (web UI changes)** | 10/10 | Extension + local IPC tool relay, not DOM scraping |
+| **Security / command execution risk** | 9/10 | Per-tool permissions, command approval, sandboxing, audit logs |
+| **Limits disappear** | High | Limits are the entry point; continuity + web-AI-as-agent is the value |
+| **Technical difficulty (reliable tool relay)** | 7/10 | Stable extension + local IPC; robust permission model |
+| **Initial defensibility** | 4/10 | Basic idea copyable; build moat via integrations, security, workflow |
+| **Competition** | 8/10 | Neutral-bridge positioning; deep integration |
 
 ---
 
 ## 12. MVP Scope & Success Criteria
 
 ### MVP In Scope
-1. Tauri desktop shell — single monitored project folder.
-2. Rust-based file watcher + git state extraction.
-3. PTY wrapper for the source agent: **Claude Code**.
-4. SQLite-backed structured memory — **no compression service yet** (raw structured state is small enough to hand off directly at MVP scale).
-5. Live activity tree UI with headroom-collapsing behavior.
-6. Manual interruption trigger → handoff card → manual **"Continue with ChatGPT"** (web, via clipboard/extension autofill) with **Codex CLI** as the second PTY adapter.
+1. Tauri desktop shell — single monitored project.
+2. Rust file watcher + git state extraction.
+3. PTY observation of **Claude Code** (capture activity).
+4. SQLite structured memory — no compression service yet.
+5. Live activity trace UI with headroom collapsing.
+6. **Browser extension** paired with the desktop app.
+7. Manual interruption → handoff card → **"Continue with ChatGPT"** with web AI able to **read files, write files, and run commands** locally.
 
 ### MVP Out of Scope
-- Compression/summarization service (Layer 3).
-- Agents beyond Claude Code (source) + ChatGPT (web) + Codex CLI.
+- Compression service (Layer 3).
+- Multiple web AIs (start with one, e.g. ChatGPT).
 - Team / enterprise features.
-- Vector DB / search at scale.
-- Browser automation / DOM scraping (web chat via clipboard/extension autofill only).
+- Automatic failover.
 
 ### MVP Success Criterion
-> A real interrupted coding task, picked up by the second agent, with the developer not having to re-explain the project.
+> A real coding task interrupted in Claude Code is continued by a **web AI** that genuinely reads, writes, and runs commands on the local project — without the developer re-explaining.
 
-Validate with 5–10 real developers before adding a third agent, compression service, or any team/enterprise features.
+Validate with 5–10 real developers.
 
-**Primary metric:** **Successful continuation rate** — out of 100 real interrupted tasks, how many can another agent continue without the developer re-explaining the project?
+**Primary metric:** **Successful continuation rate** — of real interrupted tasks, how many a web AI can continue with real tool access, without re-explanation.
 
 ---
 
 ## 13. Phased Development Roadmap
 
-### Phase 0 — Scaffold & Foundation
-- Initialize Tauri project (`src` + `src-tauri`).
-- Set up Rust core: `git2`, `portable-pty`, native fs watchers, `rusqlite`.
-- SQLite schema for Layer 1 (Session Archive) and Layer 2 (Structured Memory).
-- Scaffold compression-service (FastAPI + LangChain) skeleton.
-- Repo conventions: lint, typecheck, CI.
+### Phase 0 — Scaffold
+- Tauri shell; Rust core (git2, portable-pty, fs watchers, rusqlite); SQLite schema; compression-service skeleton; CI/lint.
 
-### Phase 1 — MVP: Prove One Handoff
-- PTY wrapper for Claude Code.
-- File watcher + git state extraction.
-- Structured memory + live activity tree UI with headroom collapsing.
-- Manual interruption → handoff card → **Continue with ChatGPT (web, via clipboard/extension autofill)**, with **Codex CLI** as the second PTY adapter.
-- **Exit gate:** successful continuation rate validated with 5–10 real developers.
+### Phase 1 — MVP: Prove Web-AI-as-Coding-Agent
+- PTY observation of Claude Code + live activity trace.
+- Browser extension paired to desktop app.
+- Handoff card → **Continue with ChatGPT**.
+- Web AI tool access: read_file, write_file, run_command (local execution + result relay).
+- **Exit gate:** real interrupted task continued by ChatGPT with real tool access, validated with 5–10 devs.
 
-### Phase 2 — Compression & More Agents
-- Implement Layer 3 context compression (Python + FastAPI + LangChain).
-- Add Gemini CLI adapter.
-- Local model adapter (Ollama).
-- Relevance retrieval for large memory volumes.
-- **Exit gate:** multiple agents hand off with compressed context; memory scales.
+### Phase 2 — More Web AIs & Compression
+- Add Claude.ai and Gemini as web-AI targets.
+- Layer 3 compression service.
+- More tools (git_status, list_directory) + command approval UX.
+- **Exit gate:** multiple web AIs continue tasks with compressed context.
 
 ### Phase 3 — Automatic Failover
-- Detect interruptions automatically (crashes, hangs, provider errors, context-limit warnings).
-- Auto-generate handoff and offer/proceed with failover.
-- Reliable cross-agent state translation.
-- **Exit gate:** automatic failover works without developer re-explanation.
+- Detect local-agent interruption automatically and offer web-AI continuation.
+- **Exit gate:** automatic continuation works without re-explanation.
 
-### Phase 4 — Orchestration & Multi-Model Workflow
-- Model routing: plan/code/review/research split across models.
-- Single persistent project state across concurrent agents.
-- **Exit gate:** orchestrator routes tasks while preserving one source of truth.
+### Phase 4 — Orchestration
+- Route parts of a task across local + multiple web AIs with single project state.
+- **Exit gate:** orchestrator routes work while preserving one source of truth.
 
 ### Phase 5 — Team & Enterprise
-- Shared project state, permissions, SSO, centralized policies.
-- Audit logs, analytics, compliance controls.
-- Self-hosted/local deployment.
-- **Exit gate:** enterprise security + audit requirements met; team workflows validated.
+- Shared state, permissions, SSO, audit, compliance, self-hosting.
+- **Exit gate:** enterprise security/audit requirements met.
 
 ---
 
@@ -505,13 +429,13 @@ Validate with 5–10 real developers before adding a third agent, compression se
 
 | Milestone | Deliverable | Definition of Done |
 |-----------|-------------|--------------------|
-| **M0 — Scaffold** | Working Tauri shell + Rust core skeleton + SQLite schema | App launches; watcher & git state extraction run; schema migrates cleanly |
-| **M1 — Capture** | Claude Code runs in PTY; activity trace renders | Session recorded to SQLite; steps shown in collapsible tree; file changes cross-validated |
-| **M2 — Handoff** | Interruption → handoff card → ChatGPT (web) continues | Handoff delivered to ChatGPT via clipboard/extension autofill (Codex CLI as second PTY adapter); developer does not re-explain; 5–10 devs validate |
-| **M3 — Compression** | Layer 3 service live | Compressed snapshot fits fresh agent context window; relevance retrieval works |
-| **M4 — Failover** | Automatic interruption detection + failover | Failover triggers correctly across Claude/Codex/Gemini; continuation rate measured |
-| **M5 — Orchestration** | Multi-model routing with single state | Orchestrator routes tasks; state consistent across agents |
-| **M6 — Enterprise** | Team/enterprise features shipped | SSO, permissions, audit, self-hosting validated with enterprise users |
+| **M0 — Scaffold** | Tauri shell + Rust core + SQLite schema | App launches; watcher & git extraction run; schema migrates |
+| **M1 — Capture** | Claude Code observed; activity trace renders | Session recorded; steps shown; file changes cross-validated |
+| **M2 — Handoff** | Interruption → card → ChatGPT connects | ChatGPT reads/writes/runs commands locally; developer does not re-explain; 5–10 devs validate |
+| **M3 — Multi-web-AI** | Claude.ai + Gemini targets; compression live | Multiple web AIs continue with compressed context |
+| **M4 — Failover** | Automatic detection + continuation | Auto-continuation works; continuation rate measured |
+| **M5 — Orchestration** | Multi-AI routing, single state | Orchestrator routes; state consistent |
+| **M6 — Enterprise** | Team/enterprise features | SSO, permissions, audit, self-hosting validated |
 
 ---
 
@@ -519,41 +443,42 @@ Validate with 5–10 real developers before adding a third agent, compression se
 
 | Metric | Definition | Target (Phase 1) |
 |--------|-----------|------------------|
-| **Successful continuation rate** | % of interrupted tasks another agent continues without re-explanation | High (validated with 5–10 devs) |
-| **Weekly retained developers** | Devs using the bridge week-over-week | Positive trend |
-| **Handoffs per user** | Avg. handoffs performed per user/week | Increasing |
-| **Average time saved** | Dev-reported time saved per handoff | Positive, material |
-| **Paid conversion** | Free → Pro conversion rate | Growing |
-| **Multi-model usage** | % of users using 2+ providers | Growing |
-| **User-reported trust** | Survey/feedback on trust in the bridge | High |
+| **Successful continuation rate** | % of interrupted tasks a web AI continues with real tool access, no re-explanation | High (5–10 devs) |
+| **Weekly retained developers** | Week-over-week usage | Positive trend |
+| **Handoffs per user** | Avg. web-AI continuations per user/week | Increasing |
+| **Average time saved** | Dev-reported time saved | Positive, material |
+| **Paid conversion** | Free → Pro | Growing |
+| **Web-AI tool usage** | % of sessions using read/write/command | Growing |
+| **User-reported trust** | Trust in the bridge's tool execution | High |
 
-**Decision evidence:** The decisive evidence comes from real developers successfully handing off real unfinished tasks and choosing to keep the product after the novelty wears off.
+**Decision evidence:** The decisive evidence comes from real developers successfully handing off real unfinished tasks to a web AI and choosing to keep the product after the novelty wears off.
 
 ---
 
 ## 16. FAQ & Objections
 
-**Q: Isn't this just a conversation saver?**
-No. The local project and real file/git/test state are the source of truth, not chat history. We transfer actual work state.
+**Q: Isn't this just a chat-history copier?**
+No. The web AI gets **real tool access** — it reads, writes, and runs commands on your local machine. It becomes a coding agent, not a chat.
 
 **Q: What if providers just raise their limits?**
-Usage limits are only the entry point. Continuity remains valuable for outages, context limits, switching models, privacy, cost, and long-running tasks.
+Limits are the entry point. The value is turning web AIs into working coding agents on your machine and preserving continuity across interruptions.
 
-**Q: How do you hand off to ChatGPT (web) if you reject browser automation?**
-ChatGPT web is a primary handoff destination, but we reach it via **clipboard / extension autofill** — not a fragile bot that opens ChatGPT, pastes, and clicks Send. DOM-scraping automation breaks on UI redesigns and anti-automation measures (10/10 platform risk) and is experimental only. Stable interfaces (CLI/PTY, official APIs, MCP) are preferred wherever available.
+**Q: Is it safe to let a web AI run commands on my machine?**
+Security is core: per-tool permissions, command approval, sandboxing, and audit logs. Nothing runs without your configured consent.
 
-**Q: Is it safe?**
-Security is a core requirement: explicit permissions, sandboxing, secrets protection, encryption, and audit logs. Everything stays local by default.
+**Q: Why not just use browser automation?**
+DOM scraping breaks constantly (10/10 risk). We use a browser extension + local IPC tool relay, which is stable and keeps you in control.
+
+**Q: Does this work with Claude.ai / Gemini too?**
+Yes — the architecture targets ChatGPT, Claude.ai, and Gemini. MVP starts with one web AI (ChatGPT) and expands.
 
 **Q: Can it be copied easily?**
-The basic idea is copyable (4/10 initial defensibility), but the moat comes from reliable state extraction, context compression, agent adapters, security, and high workflow switching costs (7/10 potential defensibility).
+The basic idea is copyable (4/10 initial defensibility); the moat is reliable tool relay, security, workflow integration, and handoff quality.
 
 ---
 
 ## Bottom Line
 
-Build the **AI continuity layer**, not the **AI limit bypass**.
-
-The initial problem may be "my AI hit its limit." The eventual company could be much bigger: a neutral infrastructure layer that makes AI agents interchangeable while keeping the user's work continuous.
+Build the bridge that lets a **web AI continue your coding work on your local machine** when your local agent is interrupted — with real read/write/terminal access and a live activity trace, so you never re-explain the project.
 
 > **"Your AI can change. Your work doesn't."**
