@@ -47,6 +47,17 @@ The product is **not another coding agent**. It is the **neutral bridge** that:
 - Preserves continuity when your local agent is interrupted.
 - Shows you exactly what the web AI is doing — which file it read, which it wrote, which command it ran.
 
+### Why the Desktop App Is the Control Center
+The desktop app is not just a relay — it is the **single place where you see and control everything** about your work:
+
+- **Live activity trace** — every command run, every file read/written, every test result, in one clear timeline.
+- **Full git workflow** — status, staged changes, diffs, branches, and history all visible; **you can commit directly from the app**.
+- **Interactive terminal pane** — see live command output and type into it directly.
+- **Real project state** — grounded in your actual filesystem, git, and terminal, not an AI's self-report.
+- **Everything local** — nothing leaves your machine; all state lives in local SQLite.
+
+The web AI works through the bridge; **you watch and control it from the desktop control center.**
+
 ### Tagline
 > **Your AI can change. Your work doesn't.**
 
@@ -163,9 +174,11 @@ Different web AIs have different context limits, tool-format expectations, and b
 | Concern | Technology |
 |---------|------------|
 | File watching | OS-native watchers (fsevents / inotify / ReadDirectoryChangesW) |
-| Git operations | `git2` (libgit2) — diffs, status, branch/commit state |
-| Terminal / command exec | `portable-pty` — run commands and observe output |
+| Git operations | `git2` (libgit2) — diffs, status, staging, branch, commit history, **commit from the app** |
+| Terminal / command exec | `portable-pty` — run commands, observe output, and **interact with the live terminal pane** |
 | SQLite access | `rusqlite` |
+
+The git panel and interactive terminal pane are powered directly by `git2` (full git workflow incl. commit) and `portable-pty` (live, interactive command I/O) — no external git/terminal process needed.
 
 ### Local State — SQLite
 Session archive (Layer 1) and structured memory (Layer 2) live in embedded SQLite — zero ops, fully local, no server dependency.
@@ -217,78 +230,141 @@ Rust provides C-level OS control with memory safety. Given the app executes comm
 - **F17 — Auto-Promotion:** On interruption, step data collapses into the handoff card.
 - **F18 — Expand-on-Demand:** Click a collapsed group to re-expand.
 
+### Desktop Control Center
+- **F19 — Git Panel (full workflow):** View status, staged/unstaged changes, diffs, branches, and commit history via `git2`; stage/unstage files.
+- **F20 — Commit from App:** Write a commit message and commit directly from the desktop UI, without touching the terminal.
+- **F21 — Interactive Terminal Pane:** See live command output and type/interact with the running PTY directly from the app.
+- **F22 — Unified Timeline:** The activity trace, terminal output, and git events are all correlated in one chronological view.
+
 ### Continuity Controls
-- **F19 — Manual Interruption:** Explicit trigger → handoff card.
-- **F20 — Continue on Web AI:** Choose ChatGPT / Claude.ai / Gemini and connect.
-- **F21 — Automatic Failover (later):** Detect interruption and offer to connect a web AI.
+- **F23 — Manual Interruption:** Explicit trigger → handoff card.
+- **F24 — Continue on Web AI:** Choose ChatGPT / Claude.ai / Gemini and connect.
+- **F25 — Automatic Failover (later):** Detect interruption and offer to connect a web AI.
 
 ### Security
-- **F22 — Explicit Permissions:** Granular read/write/command/network permissions per tool.
-- **F23 — Sandboxing:** Isolate command execution.
-- **F24 — Secrets Protection:** Protect API keys, env vars, SSH config.
-- **F25 — Encryption & Local Storage:** Encrypted local storage.
-- **F26 — Audit Logs:** Record every read/write/command for review.
-- **F27 — Command Approval (optional):** Prompt before sensitive commands.
+- **F26 — Explicit Permissions:** Granular read/write/command/network permissions per tool.
+- **F27 — Sandboxing:** Isolate command execution.
+- **F28 — Secrets Protection:** Protect API keys, env vars, SSH config.
+- **F29 — Encryption & Local Storage:** Encrypted local storage.
+- **F30 — Audit Logs:** Record every read/write/command for review.
+- **F31 — Command Approval (optional):** Prompt before sensitive commands.
 
 ### Team / Enterprise (later)
-- **F28 — Shared State:** Shared project state and handoffs for teams.
-- **F29 — Roles & Permissions:** SSO, RBAC.
-- **F30 — Centralized Policies:** Organization-wide tool/command policies.
-- **F31 — Self-Hosting:** Local/self-hosted deployment.
+- **F32 — Shared State:** Shared project state and handoffs for teams.
+- **F33 — Roles & Permissions:** SSO, RBAC.
+- **F34 — Centralized Policies:** Organization-wide tool/command policies.
+- **F35 — Self-Hosting:** Local/self-hosted deployment.
 
 ---
 
 ## 7. End-User Experience
 
+The desktop app is the **control center** — one place where you see everything happening to your work, control your git, use your terminal, and hand off to a web AI. Here is the full experience, screen by screen.
+
 ### 7.1 Installation
 - Install the desktop app (Tauri installer per OS: `.deb`/`.AppImage` on Linux, `.dmg` on macOS, `.msi`/`.exe` on Windows).
 - Install the **browser extension** (Chrome/Firefox) and pair it with the desktop app.
+- System requirements: a supported desktop OS; CLI agents (Claude Code, optionally Codex CLI) installed; enough disk for local archives. No Node/Rust toolchain needed by the end user.
 
-### 7.2 Onboarding
-1. **Welcome** — "Your AI can change. Your work doesn't."
-2. **Privacy promise** — everything local by default; you approve tool access.
-3. **Select project** — choose the folder you're working on.
-4. **Detect local agents** — the app detects Claude Code (and optionally Codex CLI) on your machine.
-5. **Permissions** — grant file read/write, command execution, and extension pairing, with granular toggles.
-6. **Pair extension** — the browser extension connects to the desktop app.
+### 7.2 Onboarding (screen by screen)
+1. **Welcome** — "Your AI can change. Your work doesn't." One-line explanation, **Get Started** / **Skip Intro**.
+2. **Privacy promise** — plain language: everything stays local by default; you approve tool access. **Continue** / **View Security Details**.
+3. **Select project** — folder picker; shows detected VCS (Git) for confirmation.
+4. **Detect local agents** — detects Claude Code (and optionally Codex CLI) with versions; enable/disable each.
+5. **Permissions** — granular toggles: file read, file write, command execution, git operations, network for compression, extension pairing.
+6. **Pair extension** — the browser extension connects to the desktop app over a local channel. Confirmation screen.
+7. **Dashboard (done)** — you land on the control center with a "Start session" call to action.
 
-### 7.3 Working with Claude Code Locally
+### 7.3 The Control Center (Main Dashboard)
+This is the heart of the app. Layout:
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  SIDEBAR      │  MAIN PANEL                                │
+│               │  ┌──────────────────────────────────────┐  │
+│  Projects     │  │  LIVE ACTIVITY TRACE                 │  │
+│   • myapp  ▸  │  │  ▾ Refactor auth (Claude Code)       │  │
+│               │  │      Reading auth.ts                 │  │
+│  Sessions     │  │      ✏ Editing auth.ts [3 lines]     │  │
+│   • #12 ▸     │  │      ▾ Running: npm test             │  │
+│   • #11 ▸     │  └──────────────────────────────────────┘  │
+│               │  ┌──────────────────────────────────────┐  │
+│  Git          │  │  TERMINAL PANE                       │  │
+│   • status    │  │  $ npm test                          │  │
+│   • diff      │  │  PASS auth.test.ts                   │  │
+│   • branch    │  └──────────────────────────────────────┘  │
+│   • commit    │                                            │
+│               │  STATUS BAR: ● Claude Code · running · 64% │
+└───────────────┴────────────────────────────────────────────┘
+```
+
+- **Sidebar:** Projects, Sessions, Git.
+- **Live Activity Trace:** real-time tree of every action.
+- **Terminal Pane:** interactive — see live output and type.
+- **Status Bar:** current agent, session state, watcher status, compression-service status.
+
+### 7.4 Working in Claude Code Locally
 - You launch Claude Code through the bridge (or the bridge observes it).
-- The bridge builds the **live activity trace** as Claude works: files read, files written, commands run, tests passing/failing.
+- Every action appears live in the **activity trace**: files read, files written, commands run, tests passing/failing.
+- Each entry is cross-validated against the filesystem watcher — you only see "wrote auth.ts" when the file actually changed on disk.
+- The **terminal pane** shows the real command output, and you can type into it if you need to intervene.
 
-### 7.4 Interruption
+### 7.5 The Git Panel (full git workflow from the app)
+You control your entire git workflow without ever opening a terminal:
+
+- **Status:** working-tree changes, staged vs unstaged.
+- **Diff:** see exactly what changed in each file (inline, colored).
+- **Stage/Unstage:** stage files or hunks with a click.
+- **Branch:** view branches, switch branches, see current branch.
+- **History:** browse commit history, view past commits/diffs.
+- **Commit from the app:**
+  - Write a commit message in the message box.
+  - See a live preview of what will be committed (staged changes).
+  - Click **Commit** — committed via `git2` locally. Optional: push after commit.
+
+### 7.6 The Interactive Terminal Pane
+- See **live command output** for anything the agent (local or web AI) runs.
+- **Type directly into it** — run your own commands, answer prompts, or take over a hanging process.
+- Everything in the terminal is correlated into the unified timeline with the activity trace.
+
+### 7.7 Interruption → Handoff Card
 - Claude Code hits its limit (or crashes, or you stop it).
-- The bridge shows a **handoff card** from real state:
+- The bridge shows a **handoff card** built from real state:
   > "Claude Code interrupted — 64% progress — 8 files changed — 3 errors remaining — objective: implement auth — next step: build login form."
+- Options: **Continue with ChatGPT / Claude.ai / Gemini**, **Edit context**, **Commit current work first**, **Discard**.
 
-### 7.5 Connecting a Web AI as a Coding Agent
+### 7.8 Connecting a Web AI as a Coding Agent
 - You click **"Continue with ChatGPT"** (or Claude.ai, or Gemini).
 - The bridge compresses the state and, via the browser extension, opens the web AI with the handoff as context.
 - The web AI can now **call tools**: `read_file`, `write_file`, `run_command` — executed locally by the Rust core, results returned into the web chat.
-- You see it work, and the **live activity trace** updates:
+- Back in the control center, the **activity trace updates live**:
   - "ChatGPT read auth.ts"
   - "ChatGPT wrote auth.ts"
   - "ChatGPT ran npm test → 2 failing"
+- The **terminal pane** shows the real output of the commands the web AI ran.
+- The **git panel** shows the new changes the web AI made — and you can **commit them from the app**.
 - You can **approve sensitive commands** if you enabled that permission.
 - The web AI continues the task — you do not re-explain the project.
 
-### 7.6 The Web AI's "Thinking" View
+### 7.9 The Web AI's "Thinking" View
 - Like ChatGPT's `> thinking` animation, the bridge shows what the web AI is doing *with your machine* — grounding its activity in real file operations and command output, not just prose.
-- You always know which file it read, which it wrote, and which command it ran.
+- You always know which file it read, which it wrote, and which command it ran — and the real effects are visible in the trace, terminal, and git panel.
 
-### 7.7 Settings
+### 7.10 Settings
 - **General:** theme, language, launch-at-startup, notifications.
 - **Projects:** add/remove monitored folders, per-project settings.
 - **Local Agents:** detect/enable/disable Claude Code, Codex CLI.
 - **Web AI Integration:** enable ChatGPT / Claude.ai / Gemini, extension pairing.
+- **Git:** default branch, commit conventions, auto-push toggle.
 - **Privacy & Security:** permissions toggles, command approval, audit log viewer, clear/export data.
 - **Compression:** configure LLM provider/model for the compression service.
 - **Updates:** check for updates, auto-update toggle.
 - **About:** version, licenses, links.
 
-### 7.8 Ongoing-Use Patterns
+### 7.11 Ongoing-Use Patterns
 - **Continuation after crash:** the bridge detects a crashed/hung local session and offers a handoff even without user action.
 - **Scheduled/long tasks:** the bridge keeps state so a long task can resume later on a web AI.
+- **Commit-as-you-go:** as the web AI or local agent makes changes, you can review and commit from the control center.
 - **Multi-AI workflow (later):** plan with one AI, code with another, review with another — each acting on your local machine.
 
 ---
@@ -375,8 +451,10 @@ Competitive: Claude Code, Codex, Cursor, Cline, Roo Code, and others. The opport
 3. PTY observation of **Claude Code** (capture activity).
 4. SQLite structured memory — no compression service yet.
 5. Live activity trace UI with headroom collapsing.
-6. **Browser extension** paired with the desktop app.
-7. Manual interruption → handoff card → **"Continue with ChatGPT"** with web AI able to **read files, write files, and run commands** locally.
+6. **Interactive terminal pane** — see and interact with live command output.
+7. **Git panel (full workflow)** — status, diff, stage/unstage, branch, history, and **commit from the app**.
+8. **Browser extension** paired with the desktop app.
+9. Manual interruption → handoff card → **"Continue with ChatGPT"** with web AI able to **read files, write files, and run commands** locally.
 
 ### MVP Out of Scope
 - Compression service (Layer 3).
@@ -400,6 +478,8 @@ Validate with 5–10 real developers.
 
 ### Phase 1 — MVP: Prove Web-AI-as-Coding-Agent
 - PTY observation of Claude Code + live activity trace.
+- **Interactive terminal pane** (see + type into live command output).
+- **Git panel** (status, diff, stage, branch, history, commit from app).
 - Browser extension paired to desktop app.
 - Handoff card → **Continue with ChatGPT**.
 - Web AI tool access: read_file, write_file, run_command (local execution + result relay).
@@ -430,8 +510,8 @@ Validate with 5–10 real developers.
 | Milestone | Deliverable | Definition of Done |
 |-----------|-------------|--------------------|
 | **M0 — Scaffold** | Tauri shell + Rust core + SQLite schema | App launches; watcher & git extraction run; schema migrates |
-| **M1 — Capture** | Claude Code observed; activity trace renders | Session recorded; steps shown; file changes cross-validated |
-| **M2 — Handoff** | Interruption → card → ChatGPT connects | ChatGPT reads/writes/runs commands locally; developer does not re-explain; 5–10 devs validate |
+| **M1 — Capture** | Claude Code observed; activity trace + interactive terminal render | Session recorded; steps shown; file changes cross-validated; user can type in terminal |
+| **M2 — Handoff** | Interruption → card → ChatGPT connects; git panel live | ChatGPT reads/writes/runs commands locally; changes visible in git panel and committable from app; developer does not re-explain; 5–10 devs validate |
 | **M3 — Multi-web-AI** | Claude.ai + Gemini targets; compression live | Multiple web AIs continue with compressed context |
 | **M4 — Failover** | Automatic detection + continuation | Auto-continuation works; continuation rate measured |
 | **M5 — Orchestration** | Multi-AI routing, single state | Orchestrator routes; state consistent |
