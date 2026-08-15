@@ -1,0 +1,130 @@
+:root {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  color-scheme: dark;
+  color: #e6e6e6;
+  background-color: #1a1a1a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 180px;
+  background: #111;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #9a9a9a;
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  overflow: auto;
+}
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: #242424;
+  border-radius: 6px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+.panel {
+  background: #222;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.panel h3 {
+  margin-top: 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid #333;
+}
+
+input {
+  padding: 6px;
+  margin-right: 6px;
+  background: #111;
+  color: #e6e6e6;
+  border: 1px solid #444;
+  border-radius: 4px;
+  min-width: 200px;
+}
+
+button {
+  padding: 6px 12px;
+  background: #2f6feb;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #3b7bfa;
+}
+
+.error {
+  color: #f87171;
+  background: #2a1414;
+  padding: 8px;
+  border-radius: 6px;
+}
+
+.term-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.term-out {
+  background: #0d0d0d;
+  padding: 10px;
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow: auto;
+}
