@@ -4,12 +4,14 @@
 |----------|--------|----------|-----|
 | Shell | Tauri | Electron | Smaller, safer; Electron acceptable if speed-to-prototype wins |
 | Systems language | Rust only | Rust + C | C adds memory-safety risk with no capability gain here |
-| Agent comms | PTY-wrap CLI | Raw API-only | Keeps each agent's native tool-use loop; API-only forces rebuilding it |
-| Web chat support | Clipboard / extension autofill | Browser automation / DOM scraping | Automation breaks on UI redesigns — flagged 10/10 platform risk |
-| State store | SQLite | Postgres / cloud DB | Local-first privacy pitch requires no data leaving the machine |
+| Local agent capture | PTY-wrap CLI (Claude Code) | Raw API-only | Keeps the native tool-use loop; API-only forces rebuilding it |
+| Web AI integration | Extension + local IPC tool relay | Browser automation / DOM scraping | DOM scraping breaks on UI redesigns — flagged 10/10 platform risk |
+| State store | SQLite | Postgres / cloud DB | Local-first privacy requires no data leaving the machine |
 | Search | Structured queries | Vector DB | Premature at MVP scale; add only if memory volume demands it |
+| Git control | In-app git panel via `git2` | External git process / terminal-only | Full workflow (status/diff/stage/branch/history/commit) from the app |
 
 ## Key Risks
 
-- **Web chat support (10/10 risk)** — browser automation / DOM scraping breaks on UI redesigns. Mitigated by choosing clipboard / extension autofill.
+- **Web AI integration (10/10 risk)** — DOM scraping / browser automation breaks on UI redesigns and anti-automation. Mitigated by using a browser extension + local IPC tool relay instead.
+- **Command execution risk** — app reads/writes files and runs commands; requires per-tool permissions, command approval, sandboxing, and audit logs.
 - **Secret handling** — app touches source code, git history, and potentially credentials; requires minimal attack surface and careful secret handling.

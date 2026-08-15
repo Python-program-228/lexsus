@@ -3,22 +3,27 @@
 ## In Scope
 
 1. **Tauri desktop shell** — single monitored project folder.
-2. **Rust-based file watcher + git state extraction** — OS-native watchers + git2 for diffs, status, branch/commit state.
-3. **PTY wrapper for one agent: Claude Code** — spawned as a child process, handoff context injected as opening input, terminal output passively observed.
+2. **Rust-based file watcher + git state extraction** — OS-native watchers + `git2`.
+3. **PTY observation of Claude Code** — capture activity and feed the live trace.
 4. **SQLite-backed structured memory** — no compression service yet; raw structured state is small enough to hand off directly at MVP scale.
-5. **Live activity tree UI** with headroom-collapsing behavior.
-6. **Manual interruption trigger → handoff card → manual "Continue with Codex CLI"** (second PTY adapter).
+5. **Live activity trace UI** with headroom-collapsing behavior.
+6. **Interactive terminal pane** — see and type into live command output.
+7. **Git panel (full workflow)** — status, diff, stage/unstage, branch, history, and **commit from the app**.
+8. **Browser extension** paired with the desktop app.
+9. **Manual interruption → handoff card → "Continue with ChatGPT"** with the web AI able to **read files, write files, and run commands** locally.
 
 ## Out of Scope (for MVP)
 
 - Compression / summarization service (Layer 3).
-- Additional agents beyond Claude Code + Codex CLI.
+- Multiple web AIs (start with one, e.g. ChatGPT).
 - Team / enterprise features.
-- Vector DB / search at scale.
-- Browser automation / web chat support.
+- Automatic failover.
+- Browser automation / DOM scraping (web AI integration via extension only).
 
 ## Success Criterion
 
-> A real interrupted coding task, picked up by the second agent, with the developer not having to re-explain the project.
+> A real coding task interrupted in Claude Code is continued by a **web AI** that genuinely reads, writes, and runs commands on the local project — without the developer re-explaining.
 
-Validate with 5–10 real developers before adding a third agent, compression service, or any team/enterprise features.
+Validate with 5–10 real developers before adding more web AIs, compression service, or any team/enterprise features.
+
+**Primary metric:** **Successful continuation rate** — of real interrupted tasks, how many a web AI can continue with real tool access, without re-explanation.

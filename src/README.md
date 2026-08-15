@@ -8,6 +8,8 @@ Tauri application shell frontend.
 - React + TypeScript app
 - Live Activity Trace UI (collapsible step tree)
 - Headroom collapsing behavior
+- Interactive terminal pane
+- Git panel (status, diff, stage, branch, history, commit)
 - Handoff card component
 
 _See `docs/ui-design.md` and `docs/tech-stack.md` for the full design._
