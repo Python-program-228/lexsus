@@ -4,7 +4,7 @@
 
 A local-first desktop application that lets a developer's in-progress AI coding session survive interruption — usage limits, crashes, provider outages, context limits, or a deliberate switch — by capturing real project state and handing the task to another agent.
 
-This document consolidates the technical plan, startup validation, and build roadmap into one end-to-end reference.
+This document is the single, authoritative, end-to-end plan: technical architecture, tech stack, every feature, the complete end-user experience, security model, business model, risks, MVP, a phased build roadmap with milestones, and validation metrics.
 
 ---
 
@@ -16,14 +16,16 @@ This document consolidates the technical plan, startup validation, and build roa
 4. [Architecture](#4-architecture)
 5. [Tech Stack](#5-tech-stack)
 6. [Full Feature List](#6-full-feature-list)
-7. [Agent Adapters Roadmap](#7-agent-adapters-roadmap)
-8. [Security Model](#8-security-model)
-9. [Business Model & Market](#9-business-model--market)
-10. [Risk Register](#10-risk-register)
-11. [MVP Scope & Success Criteria](#11-mvp-scope--success-criteria)
-12. [Phased Development Roadmap](#12-phased-development-roadmap)
-13. [Milestones & Definition of Done](#13-milestones--definition-of-done)
-14. [Validation Metrics](#14-validation-metrics)
+7. [End-User Experience](#7-end-user-experience)
+8. [Agent Adapters](#8-agent-adapters)
+9. [Security Model](#9-security-model)
+10. [Business Model & Market](#10-business-model--market)
+11. [Risk Register](#11-risk-register)
+12. [MVP Scope & Success Criteria](#12-mvp-scope--success-criteria)
+13. [Phased Development Roadmap](#13-phased-development-roadmap)
+14. [Milestones & Definition of Done](#14-milestones--definition-of-done)
+15. [Validation Metrics](#15-validation-metrics)
+16. [FAQ & Objections](#16-faq--objections)
 
 ---
 
@@ -59,6 +61,11 @@ Proposed pattern: `USER → CONTINUITY BRIDGE → AI AGENTS`
 
 The local project and task state act as the persistent layer. Claude, Codex, Gemini, or another model becomes an **interchangeable worker**. The user cares about the task, not which provider currently performs it.
 
+### Why Local-First Matters
+The local project is often more trustworthy than an AI's self-reported state. The bridge can inspect files, Git diffs, terminal output, build status, tests, package configuration, and database schema. This transfers **actual work state** rather than merely copying a conversation.
+
+Local-first also reduces privacy concerns and makes the product more attractive to professional and enterprise developers — sensitive source code need not pass through the company's own servers.
+
 ---
 
 ## 3. Product Overview
@@ -67,13 +74,12 @@ The local project and task state act as the persistent layer. Claude, Codex, Gem
 A local-first AI continuity layer that captures real project state and hands ongoing work between AI agents.
 
 ### What It Is Not
-- Not a "limit bypass" tool
-- Not a chatbot
-- Not a conversation saver (though it archives sessions)
+- Not a "limit bypass" tool.
+- Not a chatbot.
+- Not just a conversation saver (though it does archive sessions).
 
 ### Triggers (not just usage limits)
 Usage limits are the entry point, not the foundation. Other triggers include:
-
 - Provider outages
 - Context limits
 - Crashes / hangs
@@ -82,6 +88,11 @@ Usage limits are the entry point, not the foundation. Other triggers include:
 - Privacy requirements
 - Cost optimization
 - Deliberate switching
+
+### Killer Demonstration
+Claude is refactoring authentication. It changes eight files and stops. The bridge shows: **"Claude session interrupted — 64% progress — 8 files changed — 3 errors remaining."** The user selects **Continue with ChatGPT**. ChatGPT receives the handoff, inspects the project, and continues from the incomplete state.
+
+The demo succeeds if the user can genuinely continue **without re-educating the new AI**. That is more convincing than a dashboard, memory browser, or abstract architecture diagram.
 
 ---
 
@@ -96,10 +107,14 @@ Four layers, from raw capture to delivered handoff:
 | 3. **Context Compression** | Make state handoff-sized | LLM-summarized snapshot of Layer 2, sized for a fresh agent's context window |
 | 4. **Handoff Engine** | Translate + deliver | Formats Layer 3 into a provider-specific prompt and re-launches the next agent |
 
-### Why Local-First Matters
-The local project is often more trustworthy than an AI's self-reported state. The bridge can inspect files, Git diffs, terminal output, build status, tests, package configuration, and database schema. This transfers **actual work state** rather than merely copying a conversation.
+### Data Flow
+1. Agent runs inside a PTY → every event streams to Layer 1 (Session Archive).
+2. A fact-extractor interprets the archive into Layer 2 (Structured Project Memory), cross-checked against Git/file watchers.
+3. On interruption, Layer 3 compresses Layer 2 into a handoff-sized snapshot.
+4. Layer 4 formats it for the target provider and launches the next agent with it as opening input.
 
-Local-first also reduces privacy concerns and makes the product more attractive to professional and enterprise developers — sensitive source code need not pass through the company's own servers.
+### The Technical Opportunity
+Different models have different context limits, tools, instruction formats, reasoning behavior, permissions, and agent architectures. A simple conversation copy is not enough. The opportunity is a **translation layer** that converts Agent A's state into a useful task representation for Agent B while grounding it against the actual local project.
 
 ---
 
@@ -115,6 +130,7 @@ Local-first also reduces privacy concerns and makes the product more attractive 
 | File watching | OS-native watchers (fsevents / inotify / ReadDirectoryChangesW) |
 | Git operations | `git2` (Rust bindings to libgit2) — diffs, status, branch/commit state |
 | Process / PTY control | `portable-pty` — spawn/control CLI agents with full stdin/stdout/stderr |
+| SQLite access | `rusqlite` (Rust bindings) |
 
 ### Local State — SQLite
 Layers 1 and 2 both live in embedded SQLite — zero ops, fully local, no server dependency.
@@ -127,6 +143,11 @@ Claude Code, Codex CLI, and Gemini CLI are spawned as child processes inside a P
 
 ### Why Not C for the OS Layer
 Rust already provides C-level OS control with memory safety. Given direct access to source code, credentials, and shell execution, the security cost of C (buffer overflows, manual memory management, FFI complexity) outweighs any negligible performance gain. **One systems language, not two.**
+
+### Frontend Conventions
+- React + TypeScript + Vite (Tauri default template).
+- State management and component conventions established during Phase 0.
+- All UI state derives from events pushed by the Rust core over Tauri's IPC.
 
 ---
 
@@ -151,7 +172,7 @@ Rust already provides C-level OS control with memory safety. Given direct access
 - **F10 — Handoff Card:** A summary of progress ("64% progress, 8 files changed, 3 errors remaining") with a "Continue with [agent]" action.
 
 ### UI — Live Activity Trace
-- **F11 — Step Tree:** Render observed actions as a live, collapsible step tree (similar to Claude.ai tool-use blocks / Claude Code output).
+- **F11 — Step Tree:** Render observed actions as a live, collapsible step tree.
 - **F12 — Cross-Correlation:** Only show "wrote a file" when both parsed PTY output *and* the filesystem watcher confirm the change.
 - **F13 — Headroom Collapsing:** Default collapsed state (only latest 2–3 steps expanded; older steps collapse to one summary line).
 - **F14 — Reserved Outcome Space:** Live "what's happening now" line and handoff summary always keep guaranteed space.
@@ -184,7 +205,147 @@ Rust already provides C-level OS control with memory safety. Given direct access
 
 ---
 
-## 7. Agent Adapters Roadmap
+## 7. End-User Experience
+
+### 7.1 Distribution & Installation
+
+**Installers per OS** (produced by Tauri bundler):
+- **Linux:** `.deb`, `.rpm`, `.AppImage`, `.tar.gz`
+- **macOS:** `.dmg` (and `.app` bundle)
+- **Windows:** `.msi`, `.exe` (NSIS)
+
+**System requirements:**
+- A supported desktop OS (Linux/macOS/Windows).
+- Node.js runtime is **not** required for end users (bundled in Tauri).
+- Rust toolchain is **not** required for end users.
+- CLI agents (Claude Code, Codex CLI, Gemini CLI) installed and authenticated on the machine.
+- Reasonable disk space for SQLite archives and memory store.
+
+**Install flow:**
+1. User downloads the installer for their OS.
+2. Runs it (double-click on Windows/macOS; `chmod +x` + run on Linux).
+3. Installs to the standard application directory.
+4. Launches from the OS app launcher / dock / Start menu / Applications folder.
+
+**Updates:** Tauri auto-updater delivers signed updates; users are prompted to restart to apply.
+
+### 7.2 First-Run Onboarding (screen by screen)
+
+**Screen 1 — Welcome**
+- Branding: "Your AI can change. Your work doesn't."
+- One-paragraph explanation of what the bridge does.
+- Buttons: **Get Started**, **Skip Intro**.
+
+**Screen 2 — Privacy Promise**
+- Plain-language: everything stays local; no source code leaves your machine by default.
+- Link to full privacy policy and security model.
+- Buttons: **Continue**, **View Security Details**.
+
+**Screen 3 — Select Project**
+- Folder picker to choose the project to monitor (MVP: one project; later: multiple).
+- Shows detected VCS (e.g., Git) and lets the user confirm.
+- Buttons: **Choose Folder**, **Use Current Folder**, **Back**.
+
+**Screen 4 — Detect Agents**
+- Scans for installed CLI agents (Claude Code, Codex CLI, Gemini CLI).
+- Shows detected agents with versions; lets user enable/disable each.
+- Buttons: **Continue**, **Re-scan**.
+
+**Screen 5 — Permissions**
+- Explains what the bridge accesses: file changes, git state, terminal sessions, agent launch.
+- Granular toggles (file watching, git, launching agents, network for LLM compression).
+- Buttons: **Grant & Finish**, **Back**.
+
+**Screen 6 — Dashboard (done)**
+- The user lands on the Home dashboard with a "Start session" call to action.
+
+### 7.3 Home / Dashboard
+
+**Layout:**
+- **Sidebar:** project(s), session history, settings.
+- **Main panel:** 
+  - "Start a new session" button.
+  - "Continue last session" (if an interrupted session exists).
+  - Recent sessions list with status chips (Completed / Interrupted / Running).
+  - Activity summary cards (files changed, errors, progress).
+
+**Status bar:** current agent, session state, watcher status, compression-service status.
+
+### 7.4 Running an Agent Session
+
+**Starting a session:**
+1. User clicks **Start session**.
+2. Picks an agent (e.g., Claude Code) from installed agents.
+3. Types the task/objective (optional — agent can ask).
+4. Clicks **Launch**. The bridge spawns the agent inside a PTY.
+
+**While running:**
+- The user sees the **live activity trace** (step tree) in the main panel.
+- A live PTY/terminal pane is available to interact with the agent directly.
+- The user can watch progress, expand/collapse steps, and intervene.
+
+**Monitoring:**
+- Each observed action becomes a node in the step tree, cross-validated by the filesystem watcher.
+- The "what's happening now" line stays pinned at the bottom.
+
+### 7.5 Live Activity Trace UI
+
+```
+▾ Session: Refactor auth (Claude Code)
+        Reading auth.ts
+        Reading db/schema.sql
+    ✏   Editing auth.ts           [3 lines changed]
+    ▾     Running: npm test
+        ❌ 2 failing — auth.test.ts
+    ✏   Editing auth.test.ts
+    ▾     Running: npm test
+        ✅ All passing
+```
+
+**Headroom collapsing:**
+- Default: only the current / most recent 2–3 steps expanded.
+- Older steps auto-collapse into one line: "12 earlier steps — 6 files touched, 1 error resolved."
+- Clicking a collapsed group re-expands it (expand-on-demand).
+- The outcome summary always keeps guaranteed space at the bottom.
+
+### 7.6 Interruption & Handoff — the core experience
+
+**Manual interruption:**
+1. User clicks **Stop / Interrupt** (or the session is interrupted by a crash/limit/outage).
+2. The bridge consolidates state from the step tree.
+3. A **handoff card** appears:
+   - Progress summary: "64% progress, 8 files changed, 3 errors remaining."
+   - Current objective.
+   - Completed work, unfinished work, decisions, failed approaches, next recommended action.
+   - Buttons: **Continue with [Codex CLI]**, **Continue with [Gemini CLI]**, **Edit context**, **Discard**.
+
+**Continue with another agent:**
+1. User selects the target agent.
+2. The bridge compresses/translates the state (Layer 3 + Layer 4).
+3. The new agent launches with the handoff context as its opening input.
+4. The new agent inspects the project and continues — the developer does not re-explain.
+
+**Auto-promotion:**
+- On interruption, the same step data collapses directly into the handoff card — nothing is re-derived.
+
+### 7.7 Settings
+
+- **General:** theme, language, launch-at-startup, notifications.
+- **Projects:** add/remove monitored folders, per-project settings.
+- **Agents:** detect/enable/disable agents, set preferred ordering.
+- **Privacy & Security:** permissions toggles, audit log viewer, clear data, export/delete archives.
+- **Compression:** configure LLM provider/model for the compression service.
+- **Updates:** check for updates, auto-update toggle.
+- **About:** version, licenses, links.
+
+### 7.8 Ongoing-Use Patterns
+- **Continuation after crash:** the bridge detects a crashed/hung session and offers a handoff card even without user action.
+- **Scheduled/long tasks:** the bridge keeps state so a long task can resume later.
+- **Multi-model workflow (later):** plan with one model, code with another, review with another.
+
+---
+
+## 8. Agent Adapters
 
 | Phase | Agent | Interface |
 |-------|-------|-----------|
@@ -199,7 +360,7 @@ Rust already provides C-level OS control with memory safety. Given direct access
 
 ---
 
-## 8. Security Model
+## 9. Security Model
 
 A local coding bridge may see source code, API keys, environment variables, databases, SSH configuration, private repositories, and customer data. A compromised bridge is extremely dangerous. Security is therefore a **product requirement, not an add-on**.
 
@@ -214,7 +375,7 @@ A local coding bridge may see source code, API keys, environment variables, data
 
 ---
 
-## 9. Business Model & Market
+## 10. Business Model & Market
 
 ### Target Customers
 | Segment | Profile |
@@ -234,13 +395,13 @@ A local coding bridge may see source code, API keys, environment variables, data
 Prices must be validated through willingness-to-pay tests. The value proposition is **time saved and continuity**, not merely access to another AI.
 
 ### Competitive Landscape
-Highly competitive: Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Roo Code, Continue, Aider, and others are moving quickly. The opportunity is **not another coding agent** but a **neutral layer** that keeps work continuous across agents.
+Highly competitive: Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Roo Code, Continue, Aider, and others. The opportunity is **not another coding agent** but a **neutral layer** that keeps work continuous across agents.
 
-**Biggest competitive threat:** The AI providers themselves. OpenAI, Anthropic, and Google can build increasingly persistent agent environments, but they have little strategic incentive to make leaving their own ecosystem effortless. A neutral company has an incentive to connect competing ecosystems — this is the central strategic opportunity.
+**Biggest competitive threat:** The AI providers themselves. OpenAI, Anthropic, and Google can build increasingly persistent agent environments, but have little strategic incentive to make leaving their ecosystem effortless. A neutral company has an incentive to connect competing ecosystems — the central strategic opportunity.
 
 ---
 
-## 10. Risk Register
+## 11. Risk Register
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
@@ -254,7 +415,7 @@ Highly competitive: Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Roo
 
 ---
 
-## 11. MVP Scope & Success Criteria
+## 12. MVP Scope & Success Criteria
 
 ### MVP In Scope
 1. Tauri desktop shell — single monitored project folder.
@@ -280,11 +441,11 @@ Validate with 5–10 real developers before adding a third agent, compression se
 
 ---
 
-## 12. Phased Development Roadmap
+## 13. Phased Development Roadmap
 
 ### Phase 0 — Scaffold & Foundation
 - Initialize Tauri project (`src` + `src-tauri`).
-- Set up Rust core: `git2`, `portable-pty`, native fs watchers.
+- Set up Rust core: `git2`, `portable-pty`, native fs watchers, `rusqlite`.
 - SQLite schema for Layer 1 (Session Archive) and Layer 2 (Structured Memory).
 - Scaffold compression-service (FastAPI + LangChain) skeleton.
 - Repo conventions: lint, typecheck, CI.
@@ -322,7 +483,7 @@ Validate with 5–10 real developers before adding a third agent, compression se
 
 ---
 
-## 13. Milestones & Definition of Done
+## 14. Milestones & Definition of Done
 
 | Milestone | Deliverable | Definition of Done |
 |-----------|-------------|--------------------|
@@ -336,7 +497,7 @@ Validate with 5–10 real developers before adding a third agent, compression se
 
 ---
 
-## 14. Validation Metrics
+## 15. Validation Metrics
 
 | Metric | Definition | Target (Phase 1) |
 |--------|-----------|------------------|
@@ -349,6 +510,25 @@ Validate with 5–10 real developers before adding a third agent, compression se
 | **User-reported trust** | Survey/feedback on trust in the bridge | High |
 
 **Decision evidence:** The decisive evidence comes from real developers successfully handing off real unfinished tasks and choosing to keep the product after the novelty wears off.
+
+---
+
+## 16. FAQ & Objections
+
+**Q: Isn't this just a conversation saver?**
+No. The local project and real file/git/test state are the source of truth, not chat history. We transfer actual work state.
+
+**Q: What if providers just raise their limits?**
+Usage limits are only the entry point. Continuity remains valuable for outages, context limits, switching models, privacy, cost, and long-running tasks.
+
+**Q: Why not browser automation?**
+It breaks on UI redesigns and anti-automation measures (10/10 platform risk). We use PTY/CLI, official APIs, and MCP.
+
+**Q: Is it safe?**
+Security is a core requirement: explicit permissions, sandboxing, secrets protection, encryption, and audit logs. Everything stays local by default.
+
+**Q: Can it be copied easily?**
+The basic idea is copyable (4/10 initial defensibility), but the moat comes from reliable state extraction, context compression, agent adapters, security, and high workflow switching costs (7/10 potential defensibility).
 
 ---
 
