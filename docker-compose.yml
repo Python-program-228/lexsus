@@ -1,0 +1,18 @@
+# AI Continuity Bridge — local dev orchestration
+# Runs the compression-service (LLM context compression microservice) locally.
+# The Tauri/Rust core and React frontend run natively on the host; only the
+# Python FastAPI service is containerized here.
+services:
+  compression-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aicb-compression-service
+    ports:
+      - "8000:8000"
+    environment:
+      - AICB_LLM_PROVIDER=${AICB_LLM_PROVIDER:-openai}
+      - AICB_LLM_MODEL=${AICB_LLM_MODEL:-gpt-4o-mini}
+    env_file:
+      - .env
+    restart: unless-stopped
