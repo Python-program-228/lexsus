@@ -105,13 +105,13 @@ Four layers, from raw capture to delivered handoff:
 | 1. **Session Archive** | Raw capture | Every PTY session's stdin/stdout, timestamps, exit codes |
 | 2. **Structured Project Memory** | Facts, not chat | Objective, decisions, failed attempts, constraints, changed files |
 | 3. **Context Compression** | Make state handoff-sized | LLM-summarized snapshot of Layer 2, sized for a fresh agent's context window |
-| 4. **Handoff Engine** | Translate + deliver | Formats Layer 3 into a provider-specific prompt and re-launches the next agent |
+| 4. **Handoff Engine** | Translate + deliver | Formats Layer 3 into a destination-specific prompt and delivers it — launching a CLI agent, or handing to a web-chat UI (ChatGPT) via clipboard/extension autofill |
 
 ### Data Flow
 1. Agent runs inside a PTY → every event streams to Layer 1 (Session Archive).
 2. A fact-extractor interprets the archive into Layer 2 (Structured Project Memory), cross-checked against Git/file watchers.
 3. On interruption, Layer 3 compresses Layer 2 into a handoff-sized snapshot.
-4. Layer 4 formats it for the target provider and launches the next agent with it as opening input.
+4. Layer 4 formats it for the target destination and delivers it — launching a CLI agent with it as opening input, or handing it to a web-chat UI (ChatGPT) via clipboard/extension autofill.
 
 ### The Technical Opportunity
 Different models have different context limits, tools, instruction formats, reasoning behavior, permissions, and agent architectures. A simple conversation copy is not enough. The opportunity is a **translation layer** that converts Agent A's state into a useful task representation for Agent B while grounding it against the actual local project.
@@ -140,6 +140,8 @@ A local microservice on localhost doing LLM-based state compression with LangCha
 
 ### Agent Communication — CLI Wrapping (PTY), Not Browser Automation
 Claude Code, Codex CLI, and Gemini CLI are spawned as child processes inside a PTY controlled by the Rust core. The app injects handoff context as the opening input and passively observes terminal output for interruption detection and activity tracking.
+
+For **web-chat destinations (e.g. ChatGPT web)**, delivery differs: the bridge writes the handoff to the clipboard and uses a small browser extension to paste it into the web UI — it does not launch a CLI process. See [§8 Agent Adapters](#8-agent-adapters) for the mechanism and platform-risk caveats.
 
 ### Why Not C for the OS Layer
 Rust already provides C-level OS control with memory safety. Given direct access to source code, credentials, and shell execution, the security cost of C (buffer overflows, manual memory management, FFI complexity) outweighs any negligible performance gain. **One systems language, not two.**
@@ -181,7 +183,7 @@ Rust already provides C-level OS control with memory safety. Given direct access
 
 ### Continuity Controls
 - **F17 — Manual Interruption:** Explicit trigger producing a handoff card.
-- **F18 — Continue With...:** Launch a second agent (e.g., Claude Code → Codex CLI) from the handoff card.
+- **F18 — Continue With...:** Deliver the task to another destination from the handoff card — e.g., Claude Code → ChatGPT (web) or Claude Code → Codex CLI.
 - **F19 — Automatic Failover (later):** Detect interruption and offer/proceed with failover.
 
 ### Security
@@ -317,9 +319,15 @@ Rust already provides C-level OS control with memory safety. Given direct access
    - Progress summary: "64% progress, 8 files changed, 3 errors remaining."
    - Current objective.
    - Completed work, unfinished work, decisions, failed approaches, next recommended action.
-   - Buttons: **Continue with [Codex CLI]**, **Continue with [Gemini CLI]**, **Edit context**, **Discard**.
+   - Buttons: **Continue with [ChatGPT]**, **Continue with [Codex CLI]**, **Continue with [Gemini CLI]**, **Edit context**, **Discard**.
 
-**Continue with another agent:**
+**Continue with ChatGPT (web):**
+1. User selects **ChatGPT**.
+2. The bridge compresses/translates the state (Layer 3 + Layer 4) into a ChatGPT-appropriate handoff prompt.
+3. The bridge writes the handoff to the clipboard and (via a small browser extension) pastes it into ChatGPT's web textbox and clicks Send.
+4. The user gives ChatGPT the go-ahead; ChatGPT receives the handoff, the user pastes relevant context / points it at the local project, and it continues — the developer does not re-explain the project from scratch.
+
+**Continue with another CLI agent (e.g. Codex CLI):**
 1. User selects the target agent.
 2. The bridge compresses/translates the state (Layer 3 + Layer 4).
 3. The new agent launches with the handoff context as its opening input.
@@ -347,16 +355,26 @@ Rust already provides C-level OS control with memory safety. Given direct access
 
 ## 8. Agent Adapters
 
-| Phase | Agent | Interface |
-|-------|-------|-----------|
-| MVP | Claude Code | PTY wrapper |
-| MVP | Codex CLI | PTY wrapper |
+The core scenario is: a coding agent (e.g. Claude Code) hits its limit, and the task is handed to **ChatGPT (web)** — the docs' named killer demo is "Continue with ChatGPT." Web chat is therefore a **primary handoff destination**, not an afterthought. The critical question is *how* the bridge talks to ChatGPT's web UI.
+
+| Phase | Agent / Destination | Interface |
+|-------|--------------------|-----------|
+| MVP (source) | Claude Code | PTY wrapper |
+| MVP (handoff) | **ChatGPT (web UI)** | **Clipboard / extension autofill** |
+| MVP (handoff alt) | Codex CLI | PTY wrapper |
 | Phase 2 | Gemini CLI | PTY wrapper |
 | Phase 2 | Local models (Ollama etc.) | CLI / local API |
 | Later | Official APIs / MCP | Stable interfaces (preferred over browser automation) |
-| Experimental only | Web chat (ChatGPT, Claude.ai) | Clipboard / extension autofill — **not** DOM scraping |
+| Experimental only | Web chat (Claude.ai, etc.) | Clipboard / extension autofill — **not** DOM scraping |
 
-**Platform dependency principle:** Prioritize official APIs, supported integrations, CLI tools, and MCP wherever possible. Browser automation can be experimental, but must never be the core dependency.
+### How the bridge reaches ChatGPT's web UI
+
+The Structured Plan trade-off table and Validation §13 settle the mechanism:
+
+- **Chosen: Clipboard / extension autofill** — the bridge writes the handoff context to the clipboard; a small browser extension (or the user) pastes it into ChatGPT's textbox and clicks Send. The bridge reads the response back via the extension.
+- **Rejected as core: Browser automation / DOM scraping** — a bot that opens ChatGPT, finds the textbox, pastes, and clicks Send is a fragile foundation. It depends on UI structure, authentication, CAPTCHA, rate limits, anti-automation measures, and provider policies. Flagged **10/10 platform risk**.
+
+**Platform dependency principle:** Prioritize official APIs, supported integrations, CLI tools, and MCP wherever possible. Browser automation is experimental only and must never be the core dependency. For ChatGPT web specifically, the bridge uses clipboard/extension autofill — never the core depending on DOM scraping.
 
 ---
 
@@ -420,17 +438,17 @@ Highly competitive: Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Cline, Roo
 ### MVP In Scope
 1. Tauri desktop shell — single monitored project folder.
 2. Rust-based file watcher + git state extraction.
-3. PTY wrapper for one agent: **Claude Code**.
+3. PTY wrapper for the source agent: **Claude Code**.
 4. SQLite-backed structured memory — **no compression service yet** (raw structured state is small enough to hand off directly at MVP scale).
 5. Live activity tree UI with headroom-collapsing behavior.
-6. Manual interruption trigger → handoff card → manual **"Continue with Codex CLI"** (second PTY adapter).
+6. Manual interruption trigger → handoff card → manual **"Continue with ChatGPT"** (web, via clipboard/extension autofill) with **Codex CLI** as the second PTY adapter.
 
 ### MVP Out of Scope
 - Compression/summarization service (Layer 3).
-- Agents beyond Claude Code + Codex CLI.
+- Agents beyond Claude Code (source) + ChatGPT (web) + Codex CLI.
 - Team / enterprise features.
 - Vector DB / search at scale.
-- Browser automation / web chat.
+- Browser automation / DOM scraping (web chat via clipboard/extension autofill only).
 
 ### MVP Success Criterion
 > A real interrupted coding task, picked up by the second agent, with the developer not having to re-explain the project.
@@ -454,7 +472,7 @@ Validate with 5–10 real developers before adding a third agent, compression se
 - PTY wrapper for Claude Code.
 - File watcher + git state extraction.
 - Structured memory + live activity tree UI with headroom collapsing.
-- Manual interruption → handoff card → **Continue with Codex CLI**.
+- Manual interruption → handoff card → **Continue with ChatGPT (web, via clipboard/extension autofill)**, with **Codex CLI** as the second PTY adapter.
 - **Exit gate:** successful continuation rate validated with 5–10 real developers.
 
 ### Phase 2 — Compression & More Agents
@@ -489,7 +507,7 @@ Validate with 5–10 real developers before adding a third agent, compression se
 |-----------|-------------|--------------------|
 | **M0 — Scaffold** | Working Tauri shell + Rust core skeleton + SQLite schema | App launches; watcher & git state extraction run; schema migrates cleanly |
 | **M1 — Capture** | Claude Code runs in PTY; activity trace renders | Session recorded to SQLite; steps shown in collapsible tree; file changes cross-validated |
-| **M2 — Handoff** | Interruption → handoff card → Codex CLI continues | Codex CLI launched with context; developer does not re-explain; 5–10 devs validate |
+| **M2 — Handoff** | Interruption → handoff card → ChatGPT (web) continues | Handoff delivered to ChatGPT via clipboard/extension autofill (Codex CLI as second PTY adapter); developer does not re-explain; 5–10 devs validate |
 | **M3 — Compression** | Layer 3 service live | Compressed snapshot fits fresh agent context window; relevance retrieval works |
 | **M4 — Failover** | Automatic interruption detection + failover | Failover triggers correctly across Claude/Codex/Gemini; continuation rate measured |
 | **M5 — Orchestration** | Multi-model routing with single state | Orchestrator routes tasks; state consistent across agents |
@@ -521,8 +539,8 @@ No. The local project and real file/git/test state are the source of truth, not 
 **Q: What if providers just raise their limits?**
 Usage limits are only the entry point. Continuity remains valuable for outages, context limits, switching models, privacy, cost, and long-running tasks.
 
-**Q: Why not browser automation?**
-It breaks on UI redesigns and anti-automation measures (10/10 platform risk). We use PTY/CLI, official APIs, and MCP.
+**Q: How do you hand off to ChatGPT (web) if you reject browser automation?**
+ChatGPT web is a primary handoff destination, but we reach it via **clipboard / extension autofill** — not a fragile bot that opens ChatGPT, pastes, and clicks Send. DOM-scraping automation breaks on UI redesigns and anti-automation measures (10/10 platform risk) and is experimental only. Stable interfaces (CLI/PTY, official APIs, MCP) are preferred wherever available.
 
 **Q: Is it safe?**
 Security is a core requirement: explicit permissions, sandboxing, secrets protection, encryption, and audit logs. Everything stays local by default.
