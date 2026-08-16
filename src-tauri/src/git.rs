@@ -1,1 +1,290 @@
-use std::path::Path;/// A single changed file with its diff (used by the git panel).#[derive(Debug, Clone, serde::Serialize)]pub struct GitFileStatus {    pub path: String,    pub status: String, // untracked | modified | staged | deleted | renamed    pub additions: usize,    pub deletions: usize,}/// Open a git repository rooted at `path`.pub fn open_repo(path: &Path) -> Result<git2::Repository, git2::Error> {    git2::Repository::open(path)}/// Return the current branch name, if any.pub fn current_branch(repo: &git2::Repository) -> Option<String> {    repo.head()        .ok()        .and_then(|h| h.shorthand().map(|s| s.to_string()))}/// Collect per-file status of the working tree (status, diff line counts).pub fn status(repo: &git2::Repository) -> Result<Vec<GitFileStatus>, git2::Error> {    let mut options = git2::StatusOptions::new();    options        .include_untracked(true)        .recurse_untracked_dirs(true)        .include_ignored(false);    let statuses = repo.statuses(Some(&mut options))?;    let mut out = Vec::new();    for entry in statuses.iter() {        let path = match entry.path() {            Some(p) => p.to_string(),            None => continue,        };        let status = entry.status();        let kind = if status.contains(git2::Status::WT_NEW) {            "untracked".to_string()        } else if status.contains(git2::Status::INDEX_NEW) {            "staged".to_string()        } else if status.contains(git2::Status::WT_DELETED)            || status.contains(git2::Status::INDEX_DELETED)        {            "deleted".to_string()        } else if status.contains(git2::Status::INDEX_RENAMED) {            "renamed".to_string()        } else {            "modified".to_string()        };        let (additions, deletions) = diff_counts(repo, &path);        out.push(GitFileStatus {            path,            status: kind,            additions,            deletions,        });    }    Ok(out)}fn diff_counts(repo: &git2::Repository, path: &str) -> (usize, usize) {    let mut adds = 0usize;    let mut dels = 0usize;    if let Ok(head) = repo.head() {        let head_commit = match head.peel_to_commit() {            Ok(c) => c,            Err(_) => return (0, 0),        };        let head_tree = match head_commit.tree() {            Ok(t) => t,            Err(_) => return (0, 0),        };        let mut opts = git2::DiffOptions::new();        opts.pathspec(path);        let diff = repo.diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut opts));        if let Ok(diff) = diff {            for delta in diff.deltas() {                let f = delta.flags();                if f.contains(git2::DiffFlags::BINARY) {                    continue;                }            }            if let Ok(stats) = diff.stats() {                adds = stats.insertions();                dels = stats.deletions();            }        }    }    (adds, dels)}/// Create a commit from the current staged state with the given message.pub fn commit(repo: &git2::Repository, message: &str) -> Result<git2::Oid, git2::Error> {    let mut index = repo.index()?;    index.write_tree()?;    let tree_oid = index.write_tree()?;    let tree = repo.find_tree(tree_oid)?;    let sig = repo.signature()?;    let parent = repo        .head()        .ok()        .and_then(|h| h.peel_to_commit().ok())        .map(|c| c.id());    let oid = match parent {        Some(pid) => {            let parent_commit = repo.find_commit(pid)?;            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent_commit])?        }        None => repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[])?,    };    Ok(oid)}// --- M1.6: full git panel backend -------------------------------------------/// Per-file working-tree diff (patch text + line counts).#[derive(Debug, Clone, serde::Serialize)]pub struct FileDiff {    pub path: String,    pub status: String,    pub added: usize,    pub deleted: usize,    pub patch: String,}/// Diff the working tree (plus index) against HEAD. Untracked files are/// included as pure-additions. Returns one entry per changed file.pub fn diff_workdir(repo: &git2::Repository) -> Result<Vec<FileDiff>, git2::Error> {    let head_tree = repo        .head()        .ok()        .and_then(|h| h.peel_to_commit().ok())        .and_then(|c| c.tree().ok());    let mut opts = git2::DiffOptions::new();    opts.include_untracked(true).recurse_untracked_dirs(true);    let diff = match head_tree {        Some(tree) => repo.diff_tree_to_workdir_with_index(Some(&tree), Some(&mut opts))?,        None => repo.diff_index_to_workdir(None, Some(&mut opts))?,    };    let mut patches: std::collections::BTreeMap<String, String> = Default::default();    let mut counts: std::collections::BTreeMap<String, (usize, usize)> = Default::default();    let mut statuses: std::collections::BTreeMap<String, String> = Default::default();    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {        let path = delta            .old_file()            .path()            .or_else(|| delta.new_file().path())            .map(|p| p.to_string_lossy().into_owned());        if let Some(path) = path {            let entry = patches.entry(path.clone()).or_default();            entry.push(line.origin());            entry.push_str(&String::from_utf8_lossy(line.content()));            match line.origin() {                '+' => counts.entry(path.clone()).or_insert((0, 0)).0 += 1,                '-' => counts.entry(path.clone()).or_insert((0, 0)).1 += 1,                _ => {}            }            statuses                .entry(path)                .or_insert_with(|| match delta.status() {                    git2::Delta::Added => "untracked".to_string(),                    git2::Delta::Deleted => "deleted".to_string(),                    git2::Delta::Renamed => "renamed".to_string(),                    _ => "modified".to_string(),                });        }        true    })?;    Ok(patches        .into_iter()        .map(|(path, patch)| {            let (added, deleted) = counts.remove(&path).unwrap_or((0, 0));            FileDiff {                status: statuses                    .remove(&path)                    .unwrap_or_else(|| "modified".to_string()),                path,                added,                deleted,                patch,            }        })        .collect())}/// Stage a single file.pub fn stage(repo: &git2::Repository, path: &str) -> Result<(), git2::Error> {    let mut index = repo.index()?;    index.add_path(std::path::Path::new(path))?;    index.write()?;    Ok(())}/// Unstage a single file (index only; working tree untouched).pub fn unstage(repo: &git2::Repository, path: &str) -> Result<(), git2::Error> {    let mut index = repo.index()?;    index.remove_path(std::path::Path::new(path))?;    index.write()?;    Ok(())}/// Stage everything in the working tree.pub fn stage_all(repo: &git2::Repository) -> Result<(), git2::Error> {    let mut index = repo.index()?;    index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;    index.write()?;    Ok(())}#[derive(Debug, Clone, serde::Serialize)]pub struct BranchInfo {    pub name: String,    pub is_current: bool,}pub fn branches(repo: &git2::Repository) -> Result<Vec<BranchInfo>, git2::Error> {    let current = current_branch(repo);    let mut out = Vec::new();    let iter = repo.branches(None)?;    for branch in iter.flatten() {        let (branch, _kind) = branch;        if let Some(name) = branch.name().ok().flatten() {            out.push(BranchInfo {                name: name.to_string(),                is_current: current.as_deref() == Some(name),            });        }    }    out.sort_by(|a, b| a.name.cmp(&b.name));    Ok(out)}pub fn checkout(repo: &git2::Repository, name: &str) -> Result<(), git2::Error> {    let refname = format!("refs/heads/{name}");    let commit = repo.find_commit(repo.refname_to_id(&refname)?)?;    let mut co = git2::build::CheckoutBuilder::new();    co.force();    let tree = commit.tree()?;    repo.checkout_tree(tree.as_object(), Some(&mut co))?;    repo.set_head(&refname)?;    Ok(())}#[derive(Debug, Clone, serde::Serialize)]pub struct CommitInfo {    pub oid: String,    pub message: String,    pub author: String,    pub timestamp: i64,}pub fn log(repo: &git2::Repository, limit: usize) -> Result<Vec<CommitInfo>, git2::Error> {    let mut walk = repo.revwalk()?;    walk.push_head()?;    walk.set_sorting(git2::Sort::TIME)?;    let mut out = Vec::new();    for oid in walk.take(limit) {        let oid = oid?;        let commit = repo.find_commit(oid)?;        out.push(CommitInfo {            oid: oid.to_string(),            message: commit.summary().unwrap_or("").to_string(),            author: commit.author().name().unwrap_or("").to_string(),            timestamp: commit.time().seconds(),        });    }    Ok(out)}/// Full patch text of a single commit (against its parent; root commits/// diff against the empty tree).pub fn commit_diff(repo: &git2::Repository, oid: &str) -> Result<String, git2::Error> {    let commit = repo.find_commit(        git2::Oid::from_str(oid).map_err(|e| git2::Error::from_str(&e.to_string()))?,    )?;    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());    let tree = commit.tree()?;    let diff = match parent_tree {        Some(pt) => repo.diff_tree_to_tree(Some(&pt), Some(&tree), None)?,        None => repo.diff_tree_to_tree(None, Some(&tree), None)?,    };    let mut out = String::new();    diff.print(git2::DiffFormat::Patch, |_d, _h, line| {        out.push(line.origin());        out.push_str(&String::from_utf8_lossy(line.content()));        true    })?;    Ok(out)}
+use std::path::Path;
+
+/// A single changed file with its diff (used by the git panel).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GitFileStatus {
+    pub path: String,
+    pub status: String,
+    // untracked | modified | staged | deleted | renamed
+    pub additions: usize,
+    pub deletions: usize,
+}
+
+/// Open a git repository rooted at `path`.
+pub fn open_repo(path: &Path) -> Result<git2::Repository, git2::Error> {
+    git2::Repository::open(path)
+}
+
+/// Return the current branch name, if any.
+pub fn current_branch(repo: &git2::Repository) -> Option<String> {
+    repo.head()
+        .ok()
+        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+}
+
+/// Collect per-file status of the working tree (status, diff line counts).
+pub fn status(repo: &git2::Repository) -> Result<Vec<GitFileStatus>, git2::Error> {
+    let mut options = git2::StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false);
+    let statuses = repo.statuses(Some(&mut options))?;
+    let mut out = Vec::new();
+    for entry in statuses.iter() {
+        let path = match entry.path() {
+            Some(p) => p.to_string(),
+            None => continue,
+        };
+        let status = entry.status();
+        let kind = if status.contains(git2::Status::WT_NEW) {
+            "untracked".to_string()
+        } else if status.contains(git2::Status::INDEX_NEW) {
+            "staged".to_string()
+        } else if status.contains(git2::Status::WT_DELETED)
+            || status.contains(git2::Status::INDEX_DELETED)
+        {
+            "deleted".to_string()
+        } else if status.contains(git2::Status::INDEX_RENAMED) {
+            "renamed".to_string()
+        } else {
+            "modified".to_string()
+        };
+        let (additions, deletions) = diff_counts(repo, &path);
+        out.push(GitFileStatus {
+            path,
+            status: kind,
+            additions,
+            deletions,
+        });
+    }
+    Ok(out)
+}
+
+fn diff_counts(repo: &git2::Repository, path: &str) -> (usize, usize) {
+    let mut adds = 0usize;
+    let mut dels = 0usize;
+    if let Ok(head) = repo.head() {
+        let head_commit = match head.peel_to_commit() {
+            Ok(c) => c,
+            Err(_) => return (0, 0),
+        };
+        let head_tree = match head_commit.tree() {
+            Ok(t) => t,
+            Err(_) => return (0, 0),
+        };
+        let mut opts = git2::DiffOptions::new();
+        opts.pathspec(path);
+        let diff = repo.diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut opts));
+        if let Ok(diff) = diff {
+            for delta in diff.deltas() {
+                let f = delta.flags();
+                if f.contains(git2::DiffFlags::BINARY) {
+                    continue;
+                }
+            }
+            if let Ok(stats) = diff.stats() {
+                adds = stats.insertions();
+                dels = stats.deletions();
+            }
+        }
+    }
+    (adds, dels)
+}
+
+/// Create a commit from the current staged state with the given message.
+pub fn commit(repo: &git2::Repository, message: &str) -> Result<git2::Oid, git2::Error> {
+    let mut index = repo.index()?;
+    index.write_tree()?;
+    let tree_oid = index.write_tree()?;
+    let tree = repo.find_tree(tree_oid)?;
+    let sig = repo.signature()?;
+    let parent = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_commit().ok())
+        .map(|c| c.id());
+    let oid = match parent {
+        Some(pid) => {
+            let parent_commit = repo.find_commit(pid)?;
+            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent_commit])?
+        }
+        None => repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[])?,
+    };
+    Ok(oid)
+}
+
+// --- M1.6: full git panel backend -------------------------------------------/// Per-file working-tree diff (patch text + line counts).
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FileDiff {
+    pub path: String,
+    pub status: String,
+    pub added: usize,
+    pub deleted: usize,
+    pub patch: String,
+}
+
+/// Diff the working tree (plus index) against HEAD. Untracked files are/// included as pure-additions. Returns one entry per changed file.
+pub fn diff_workdir(repo: &git2::Repository) -> Result<Vec<FileDiff>, git2::Error> {
+    let head_tree = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_commit().ok())
+        .and_then(|c| c.tree().ok());
+    let mut opts = git2::DiffOptions::new();
+    opts.include_untracked(true).recurse_untracked_dirs(true);
+    let diff = match head_tree {
+        Some(tree) => repo.diff_tree_to_workdir_with_index(Some(&tree), Some(&mut opts))?,
+        None => repo.diff_index_to_workdir(None, Some(&mut opts))?,
+    };
+    let mut patches: std::collections::BTreeMap<String, String> = Default::default();
+    let mut counts: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+    let mut statuses: std::collections::BTreeMap<String, String> = Default::default();
+    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
+        let path = delta
+            .old_file()
+            .path()
+            .or_else(|| delta.new_file().path())
+            .map(|p| p.to_string_lossy().into_owned());
+        if let Some(path) = path {
+            let entry = patches.entry(path.clone()).or_default();
+            entry.push(line.origin());
+            entry.push_str(&String::from_utf8_lossy(line.content()));
+
+            match line.origin() {
+                '+' => counts.entry(path.clone()).or_insert((0, 0)).0 += 1,
+                '-' => counts.entry(path.clone()).or_insert((0, 0)).1 += 1,
+                _ => {}
+            }
+            statuses
+                .entry(path)
+                .or_insert_with(|| match delta.status() {
+                    git2::Delta::Added => "untracked".to_string(),
+                    git2::Delta::Deleted => "deleted".to_string(),
+                    git2::Delta::Renamed => "renamed".to_string(),
+                    _ => "modified".to_string(),
+                });
+        }
+        true
+    })?;
+    Ok(patches
+        .into_iter()
+        .map(|(path, patch)| {
+            let (added, deleted) = counts.remove(&path).unwrap_or((0, 0));
+            FileDiff {
+                status: statuses
+                    .remove(&path)
+                    .unwrap_or_else(|| "modified".to_string()),
+                path,
+                added,
+                deleted,
+                patch,
+            }
+        })
+        .collect())
+}
+
+/// Stage a single file.
+pub fn stage(repo: &git2::Repository, path: &str) -> Result<(), git2::Error> {
+    let mut index = repo.index()?;
+    index.add_path(std::path::Path::new(path))?;
+    index.write()?;
+    Ok(())
+}
+
+/// Unstage a single file (index only; working tree untouched).
+pub fn unstage(repo: &git2::Repository, path: &str) -> Result<(), git2::Error> {
+    let mut index = repo.index()?;
+    index.remove_path(std::path::Path::new(path))?;
+    index.write()?;
+    Ok(())
+}
+
+/// Stage everything in the working tree.
+pub fn stage_all(repo: &git2::Repository) -> Result<(), git2::Error> {
+    let mut index = repo.index()?;
+    index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
+    index.write()?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BranchInfo {
+    pub name: String,
+    pub is_current: bool,
+}
+
+pub fn branches(repo: &git2::Repository) -> Result<Vec<BranchInfo>, git2::Error> {
+    let current = current_branch(repo);
+    let mut out = Vec::new();
+    let iter = repo.branches(None)?;
+    for branch in iter.flatten() {
+        let (branch, _kind) = branch;
+        if let Some(name) = branch.name().ok().flatten() {
+            out.push(BranchInfo {
+                name: name.to_string(),
+                is_current: current.as_deref() == Some(name),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+pub fn checkout(repo: &git2::Repository, name: &str) -> Result<(), git2::Error> {
+    let refname = format!("refs/heads/{name}");
+    let commit = repo.find_commit(repo.refname_to_id(&refname)?)?;
+    let mut co = git2::build::CheckoutBuilder::new();
+    co.force();
+    let tree = commit.tree()?;
+    repo.checkout_tree(tree.as_object(), Some(&mut co))?;
+    repo.set_head(&refname)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CommitInfo {
+    pub oid: String,
+    pub message: String,
+    pub author: String,
+    pub timestamp: i64,
+}
+
+pub fn log(repo: &git2::Repository, limit: usize) -> Result<Vec<CommitInfo>, git2::Error> {
+    let mut walk = repo.revwalk()?;
+    walk.push_head()?;
+    walk.set_sorting(git2::Sort::TIME)?;
+    let mut out = Vec::new();
+    for oid in walk.take(limit) {
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        out.push(CommitInfo {
+            oid: oid.to_string(),
+            message: commit.summary().unwrap_or("").to_string(),
+            author: commit.author().name().unwrap_or("").to_string(),
+            timestamp: commit.time().seconds(),
+        });
+    }
+    Ok(out)
+}
+
+/// Full patch text of a single commit (against its parent; root commits/// diff against the empty tree).
+pub fn commit_diff(repo: &git2::Repository, oid: &str) -> Result<String, git2::Error> {
+    let commit = repo.find_commit(
+        git2::Oid::from_str(oid).map_err(|e| git2::Error::from_str(&e.to_string()))?,
+    )?;
+    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+    let tree = commit.tree()?;
+    let diff = match parent_tree {
+        Some(pt) => repo.diff_tree_to_tree(Some(&pt), Some(&tree), None)?,
+        None => repo.diff_tree_to_tree(None, Some(&tree), None)?,
+    };
+    let mut out = String::new();
+    diff.print(git2::DiffFormat::Patch, |_d, _h, line| {
+        out.push(line.origin());
+        out.push_str(&String::from_utf8_lossy(line.content()));
+        true
+    })?;
+    Ok(out)
+}
