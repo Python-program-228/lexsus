@@ -10,7 +10,7 @@ pub struct GitFileStatus {
 }
 
 /// Open a git repository rooted at `path`.
-pub fn open_repo(path: &Path) -> git2::Result<git2::Repository> {
+pub fn open_repo(path: &Path) -> Result<git2::Repository, git2::Error> {
     git2::Repository::open(path)
 }
 
@@ -22,7 +22,7 @@ pub fn current_branch(repo: &git2::Repository) -> Option<String> {
 }
 
 /// Collect per-file status of the working tree (status, diff line counts).
-pub fn status(repo: &git2::Repository) -> git2::Result<Vec<GitFileStatus>> {
+pub fn status(repo: &git2::Repository) -> Result<Vec<GitFileStatus>, git2::Error> {
     let mut options = git2::StatusOptions::new();
     options
         .include_untracked(true)
@@ -99,7 +99,7 @@ fn diff_counts(repo: &git2::Repository, path: &str) -> (usize, usize) {
 }
 
 /// Create a commit from the current staged state with the given message.
-pub fn commit(repo: &git2::Repository, message: &str) -> git2::Result<git2::Oid> {
+pub fn commit(repo: &git2::Repository, message: &str) -> Result<git2::Oid, git2::Error> {
     let mut index = repo.index()?;
     index.write_tree()?;
     let tree_oid = index.write_tree()?;

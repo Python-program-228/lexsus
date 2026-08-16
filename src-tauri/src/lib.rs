@@ -5,7 +5,7 @@ pub mod pty;
 pub mod watcher;
 
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::State;
 
 /// App-managed shared state: the SQLite connection and the watched project root.
 struct AppState {
