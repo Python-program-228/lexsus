@@ -734,6 +734,7 @@ fn handoff_send(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<Han
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             conn: Mutex::new(rusqlite::Connection::open_in_memory().expect("in-memory db")),
             project_root: Mutex::new(None),

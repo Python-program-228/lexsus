@@ -3,8 +3,28 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { claudeSpawn, ptyKill, ptyResize, ptySpawn, ptyWrite } from "../lib/bridge";
+import { PowerIcon, RotateCcwIcon, SquareTerminalIcon } from "lucide-react";
+import {
+  claudeSpawn,
+  ptyKill,
+  ptyResize,
+  ptySpawn,
+  ptyWrite,
+} from "../lib/bridge";
 import type { PtyExit, PtyOverflow, PtyOutput, PtySpawned } from "../lib/types";
+import { cn } from "../lib/utils";
+import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "./ui/card";
+import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 interface TerminalPaneProps {
   cwd: string;
@@ -147,45 +167,88 @@ export default function TerminalPane({ cwd }: TerminalPaneProps) {
   }
 
   return (
-    <section className="panel terminal-pane">
-      <header className="term-header">
-        <span className={`dot dot-${state}`} />
-        <b className="term-title">Terminal</b>
-        <span className="term-meta">
-          {state === "idle"
-            ? "no session"
-            : state === "running"
-              ? `${session?.shell ?? "shell"} · ${session?.cwd ?? cwd}`
-              : `exited (${exitCode ?? "?"})`}
-        </span>
-        {dropped > 0 && (
-          <span className="badge" title="PTY buffer overflowed; output was dropped">
-            dropped {dropped} chunks
+    <Card className="h-full">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <SquareTerminalIcon className="size-4 shrink-0 text-muted-foreground" />
+          Terminal
+          <span className="flex items-center gap-1.5">
+            <span
+              className={cn(
+                "size-2 rounded-full",
+                state === "running"
+                  ? "animate-pulse bg-emerald-500"
+                  : state === "exited"
+                    ? "bg-zinc-500"
+                    : "bg-zinc-700",
+              )}
+            />
+            <span className="text-xs font-normal text-muted-foreground">
+              {state === "idle"
+                ? "no session"
+                : state === "running"
+                  ? `${session?.shell ?? "shell"} · ${session?.cwd ?? cwd}`
+                  : `exited (${exitCode ?? "?"})`}
+            </span>
           </span>
-        )}
-        <span className="spacer" />
-        <button
-          className={mode === "shell" ? "mode-btn active" : "mode-btn"}
-          onClick={() => setMode("shell")}
-          title="plain shell session"
-        >
-          Shell
-        </button>
-        <button
-          className={mode === "claude" ? "mode-btn active" : "mode-btn"}
-          onClick={() => setMode("claude")}
-          title="spawn Claude Code in this session"
-        >
-          Claude Code
-        </button>
-        <button onClick={restart} disabled={state === "idle"}>
-          Restart
-        </button>
-        <button className="danger" onClick={() => ptyKill().catch(() => {})}>
-          Kill
-        </button>
-      </header>
-      <div className="term-body" ref={containerRef} />
-    </section>
+          {dropped > 0 && (
+            <Badge
+              variant="outline"
+              className="border-amber-500/30 bg-amber-500/10 text-amber-400"
+              title="PTY buffer overflowed; output was dropped"
+            >
+              dropped {dropped} chunks
+            </Badge>
+          )}
+        </CardTitle>
+        <CardDescription>
+          {mode === "claude"
+            ? "Claude Code CLI in this session"
+            : "plain shell session"}
+        </CardDescription>
+        <CardAction className="flex items-center gap-2">
+          <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
+            <TabsList>
+              <TabsTrigger value="shell">Shell</TabsTrigger>
+              <TabsTrigger value="claude">Claude Code</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-sm"
+                  variant="outline"
+                  onClick={restart}
+                  disabled={state === "idle"}
+                />
+              }
+            >
+              <RotateCcwIcon />
+            </TooltipTrigger>
+            <TooltipContent>Restart session</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  size="icon-sm"
+                  variant="destructive"
+                  onClick={() => ptyKill().catch(() => {})}
+                />
+              }
+            >
+              <PowerIcon />
+            </TooltipTrigger>
+            <TooltipContent>Kill session</TooltipContent>
+          </Tooltip>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="min-h-0 flex-1 px-3 pb-3">
+        <div className="h-[340px] overflow-hidden rounded-lg border border-border/60 bg-[#0d0d0d]">
+          <div ref={containerRef} className="h-full w-full p-2" />
+        </div>
+      </CardContent>
+    </Card>
   );
 }

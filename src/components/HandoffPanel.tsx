@@ -1,10 +1,31 @@
 import { useEffect, useState } from "react";
 import {
-  buildHandoff,
-  handoffSend,
-  setObjective,
-} from "../lib/bridge";
+  ProgressBar,
+  ProgressBarFill,
+  ProgressBarTrack,
+  Spinner,
+} from "@heroui/react";
+import {
+  ClipboardIcon,
+  LightbulbIcon,
+  MessageCircleIcon,
+  RotateCcwIcon,
+} from "lucide-react";
+import { buildHandoff, handoffSend, setObjective } from "../lib/bridge";
 import type { Handoff } from "../lib/types";
+import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
+import { Button } from "./ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "./ui/card";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
+import { Separator } from "./ui/separator";
+import { toast } from "./ui/toast";
 
 /** Handoff card (M2): build real state → "Continue with ChatGPT".
  *  Sends the payload to the paired extension (which renders it on
@@ -33,6 +54,11 @@ export default function HandoffPanel() {
     );
     await navigator.clipboard.writeText(handoffText(h)).catch(() => {});
     setStatus("handoff sent to the extension (also copied to clipboard)");
+    toast.add({
+      title: "Handoff sent",
+      description: "Open chatgpt.com in the paired browser to continue.",
+      type: "success",
+    });
   }
 
   function handoffText(h: Handoff): string {
@@ -56,48 +82,119 @@ export default function HandoffPanel() {
   }, []);
 
   return (
-    <section className="panel handoff-panel">
-      <header className="panel-head">
-        <h3>Handoff → ChatGPT</h3>
-        <span className="muted">built from real trace + watcher state</span>
-      </header>
-      {handoff ? (
-        <div className="handoff-card">
-          <div className="handoff-row">
-            <label>Objective</label>
-            <input value={objective} onChange={(e) => setObj(e.currentTarget.value)} />
+    <Card className="h-full">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <MessageCircleIcon className="size-4 shrink-0 text-muted-foreground" />
+          Handoff → ChatGPT
+        </CardTitle>
+        <CardDescription>built from real trace + watcher state</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {handoff ? (
+          <>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="objective">Objective</Label>
+              <Input
+                id="objective"
+                value={objective}
+                onChange={(e) => setObj(e.currentTarget.value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">Progress</span>
+                <span className="font-mono">{handoff.progress_percent}%</span>
+              </div>
+              <ProgressBar
+                value={handoff.progress_percent}
+                color="accent"
+                aria-label="Handoff progress"
+              >
+                <ProgressBarTrack className="h-1.5">
+                  <ProgressBarFill />
+                </ProgressBarTrack>
+              </ProgressBar>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <div className="flex flex-col gap-0.5 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                <span className="text-[11px] text-muted-foreground">
+                  Files changed
+                </span>
+                <span className="font-mono text-sm font-semibold">
+                  {handoff.files_changed}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                <span className="text-[11px] text-muted-foreground">
+                  Errors remaining
+                </span>
+                <span className="font-mono text-sm font-semibold">
+                  {handoff.errors_remaining}
+                </span>
+              </div>
+              <div className="col-span-2 flex flex-col gap-0.5 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 sm:col-span-1">
+                <span className="text-[11px] text-muted-foreground">State</span>
+                <span className="font-mono text-sm font-semibold text-muted-foreground">
+                  {handoff.errors_remaining > 0 ? "in progress" : "on track"}
+                </span>
+              </div>
+            </div>
+
+            {handoff.next_step && (
+              <p className="text-xs text-muted-foreground">
+                next step: {handoff.next_step}
+              </p>
+            )}
+
+            <Separator />
+
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={() => void continueWithChatGPT()}>
+                <MessageCircleIcon /> Continue with ChatGPT
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  void navigator.clipboard
+                    .writeText(handoffText(handoff!))
+                    .then(() =>
+                      toast.add({
+                        title: "Copied",
+                        description: "handoff text is on your clipboard",
+                        type: "success",
+                      }),
+                    )
+                }
+              >
+                <ClipboardIcon /> Copy handoff
+              </Button>
+              <Button variant="ghost" onClick={() => void build()}>
+                <RotateCcwIcon /> Rebuild
+              </Button>
+            </div>
+
+            {status && <p className="text-xs text-emerald-400">{status}</p>}
+
+            {built && !handoff.files_changed && (
+              <Alert>
+                <LightbulbIcon />
+                <AlertTitle>Tip</AlertTitle>
+                <AlertDescription>
+                  Run a Claude Code session first — the card is built from what
+                  it did.
+                </AlertDescription>
+              </Alert>
+            )}
+          </>
+        ) : (
+          <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+            <Spinner size="sm" /> building handoff…
           </div>
-          <div className="handoff-stats">
-            <span>
-              <b>{handoff.progress_percent}%</b> progress
-            </span>
-            <span>
-              <b>{handoff.files_changed}</b> files changed
-            </span>
-            <span>
-              <b>{handoff.errors_remaining}</b> errors remaining
-            </span>
-          </div>
-          {handoff.next_step && (
-            <p className="muted">next step: {handoff.next_step}</p>
-          )}
-          <div className="handoff-actions">
-            <button onClick={continueWithChatGPT}>Continue with ChatGPT</button>
-            <button onClick={() => void navigator.clipboard.writeText(handoffText(handoff!))}>
-              Copy handoff
-            </button>
-            <button onClick={() => void build()}>Rebuild</button>
-          </div>
-          {status && <p className="muted">{status}</p>}
-          {built && !handoff?.files_changed && (
-            <p className="muted">
-              tip: run a Claude Code session first — the card is built from what it did
-            </p>
-          )}
-        </div>
-      ) : (
-        <p className="muted">building…</p>
-      )}
-    </section>
+        )}
+      </CardContent>
+    </Card>
   );
 }
