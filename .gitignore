@@ -36,3 +36,9 @@ compression-service/.venv/
 compression-service/__pycache__/
 __pycache__/
 *.pyc
+
+# Downloaded tooling / stray artifacts
+rustup-init.sh
+requirements/*.pdf
+src-tauri/*.sqlite
+aicb.sqlite

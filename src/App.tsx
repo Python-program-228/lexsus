@@ -1,5 +1,15 @@
 import { useEffect, useState } from "react";
-import { gitBranch, gitCommit, gitStatus, runCommand } from "./lib/bridge";
+import {
+  gitBranch,
+  gitCommit,
+  gitStatus,
+  initDatabase,
+  runCommand,
+  setProjectRoot,
+  shellWrite,
+  spawnShell,
+  startWatch,
+} from "./lib/bridge";
 import type { CommandOutput, GitFileStatus } from "./lib/types";
 
 /** A minimal "control center" shell demonstrating the Phase 0 Rust core. */
@@ -12,11 +22,38 @@ export default function App() {
   const [commitResult, setCommitResult] = useState("");
   const [error, setError] = useState("");
 
+  const [dbPath, setDbPath] = useState("aicb.sqlite");
+  const [rootPath, setRootPath] = useState(".");
+  const [initMsg, setInitMsg] = useState("");
+  const [shellInput, setShellInput] = useState("");
+  const [shellMsg, setShellMsg] = useState("");
+
   async function refreshGit() {
     try {
       setStatus(await gitStatus());
       setBranch(await gitBranch());
       setError("");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function onInit() {
+    try {
+      const versions = await initDatabase(dbPath);
+      setInitMsg(`db ready (${versions.join(", ")})`);
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function onSetRoot() {
+    try {
+      await setProjectRoot(rootPath);
+      setInitMsg(`root set: ${rootPath}`);
+      setError("");
+      await refreshGit();
     } catch (e) {
       setError(String(e));
     }
@@ -42,8 +79,40 @@ export default function App() {
     }
   }
 
+  async function onStartWatch() {
+    try {
+      await startWatch();
+      setInitMsg("watching project folder");
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function onSpawnShell() {
+    try {
+      setShellMsg(await spawnShell());
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function onShellWrite() {
+    try {
+      await shellWrite(shellInput);
+      setShellMsg(`sent: ${shellInput}`);
+      setShellInput("");
+      setError("");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   useEffect(() => {
-    refreshGit();
+    onInit();
+    onSetRoot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -64,6 +133,28 @@ export default function App() {
         </header>
 
         {error && <pre className="error">{error}</pre>}
+        {initMsg && <p className="ok">{initMsg}</p>}
+
+        <section className="panel">
+          <h3>Setup</h3>
+          <div className="term-row">
+            <label>DB path</label>
+            <input
+              value={dbPath}
+              onChange={(e) => setDbPath(e.currentTarget.value)}
+            />
+            <button onClick={onInit}>Init DB</button>
+          </div>
+          <div className="term-row">
+            <label>Project root</label>
+            <input
+              value={rootPath}
+              onChange={(e) => setRootPath(e.currentTarget.value)}
+            />
+            <button onClick={onSetRoot}>Set root</button>
+            <button onClick={onStartWatch}>Watch</button>
+          </div>
+        </section>
 
         <section className="panel">
           <h3>Git status</h3>
@@ -119,6 +210,21 @@ export default function App() {
               {"\n"}exit: {String(output.exit_code)}
             </pre>
           )}
+        </section>
+
+        <section className="panel">
+          <h3>Interactive shell</h3>
+          <button onClick={onSpawnShell}>Spawn shell</button>
+          {shellMsg && <p>{shellMsg}</p>}
+          <div className="term-row">
+            <input
+              value={shellInput}
+              placeholder="input to the running shell"
+              onChange={(e) => setShellInput(e.currentTarget.value)}
+              onKeyDown={(e) => e.key === "Enter" && onShellWrite()}
+            />
+            <button onClick={onShellWrite}>Send</button>
+          </div>
         </section>
       </main>
     </div>

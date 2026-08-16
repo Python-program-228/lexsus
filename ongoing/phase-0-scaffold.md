@@ -1,6 +1,6 @@
 # Phase 0 — Scaffold & Foundation (Completed)
 
-> **Status:** ✅ Done — verified locally. Not yet committed.
+> **Status:** ✅ Done — committed on `developing`.
 > **Branch:** `developing`
 > **M0 Definition of Done:** Tauri app launches · Rust core modules compile & run · SQLite schema migrates · compression-service `/health` responds · lint/typecheck/build pass · `ongoing/` doc written.
 

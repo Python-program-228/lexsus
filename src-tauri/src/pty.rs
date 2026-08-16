@@ -55,9 +55,23 @@ pub fn run_command(cmd: &str, cwd: &std::path::Path) -> std::io::Result<CommandO
     })
 }
 
-/// Spawn a long-lived interactive shell PTY and return a channel for output.
-/// Used by the interactive terminal pane.
-pub fn spawn_interactive_shell(cwd: &std::path::Path) -> Receiver<String> {
+/// A long-lived interactive shell PTY: read its output and write into it.
+/// Used by the interactive terminal pane (and the future `run_command` relay).
+pub struct InteractiveShell {
+    pub output: Receiver<String>,
+    writer: Box<dyn std::io::Write + Send>,
+}
+
+impl InteractiveShell {
+    /// Send input (e.g. a command plus newline) to the running shell.
+    pub fn write_input(&mut self, input: &str) -> std::io::Result<()> {
+        self.writer.write_all(input.as_bytes())?;
+        self.writer.flush()
+    }
+}
+
+/// Spawn a long-lived interactive shell PTY and return handles for read + write.
+pub fn spawn_interactive_shell(cwd: &std::path::Path) -> InteractiveShell {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -70,10 +84,7 @@ pub fn spawn_interactive_shell(cwd: &std::path::Path) -> Receiver<String> {
 
     let mut cmd_builder = CommandBuilder::new("sh");
     cmd_builder.cwd(cwd);
-    let mut _child = pair
-        .slave
-        .spawn_command(cmd_builder)
-        .expect("spawn failed");
+    let mut _child = pair.slave.spawn_command(cmd_builder).expect("spawn failed");
     drop(pair.slave);
 
     let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -90,7 +101,8 @@ pub fn spawn_interactive_shell(cwd: &std::path::Path) -> Receiver<String> {
         }
     });
 
-    // Keep the writer handle on the same thread so the PTY stays alive.
-    let _master = pair.master;
-    rx
+    InteractiveShell {
+        output: rx,
+        writer: pair.master.take_writer(),
+    }
 }

@@ -7,10 +7,12 @@ pub mod watcher;
 use std::sync::Mutex;
 use tauri::State;
 
-/// App-managed shared state: the SQLite connection and the watched project root.
+/// App-managed shared state: the SQLite connection, the watched project root,
+/// and the (optional) interactive shell PTY.
 struct AppState {
     conn: Mutex<rusqlite::Connection>,
     project_root: Mutex<Option<std::path::PathBuf>>,
+    shell: Mutex<Option<pty::InteractiveShell>>,
 }
 
 /// Initialize / open the local database and return the connection.
@@ -113,8 +115,23 @@ fn spawn_shell(state: State<'_, AppState>) -> Result<String, String> {
         .unwrap()
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let _rx = pty::spawn_interactive_shell(&cwd);
+    let shell = pty::spawn_interactive_shell(&cwd);
+    *state.shell.lock().unwrap() = Some(shell);
     Ok("shell spawned".to_string())
+}
+
+/// Write input into the running interactive shell PTY.
+#[tauri::command]
+fn shell_write(state: State<'_, AppState>, input: String) -> Result<(), String> {
+    let mut shell = state
+        .shell
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or_else(|| "no shell spawned".to_string())?;
+    shell.write_input(&input).map_err(|e| e.to_string())?;
+    *state.shell.lock().unwrap() = Some(shell);
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -122,10 +139,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
-            conn: Mutex::new(
-                rusqlite::Connection::open_in_memory().expect("in-memory db"),
-            ),
+            conn: Mutex::new(rusqlite::Connection::open_in_memory().expect("in-memory db")),
             project_root: Mutex::new(None),
+            shell: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             init_database,
@@ -137,6 +153,7 @@ pub fn run() {
             start_watch,
             bridge_tool,
             spawn_shell,
+            shell_write,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

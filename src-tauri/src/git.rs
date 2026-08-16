@@ -98,24 +98,29 @@ fn diff_counts(repo: &git2::Repository, path: &str) -> (usize, usize) {
     (adds, dels)
 }
 
-/// Create a commit from the current staged state with the given message.
+/// Stage all working-tree changes and create a commit with the given message.
 pub fn commit(repo: &git2::Repository, message: &str) -> Result<git2::Oid, git2::Error> {
     let mut index = repo.index()?;
-    index.write_tree()?;
+    index.add_all(["."], git2::IndexAddOption::DEFAULT, None)?;
+    index.write()?;
+
     let tree_oid = index.write_tree()?;
     let tree = repo.find_tree(tree_oid)?;
 
     let sig = repo.signature()?;
-    let parent = repo
-        .head()
-        .ok()
-        .and_then(|h| h.peel_to_commit().ok())
-        .map(|c| c.id());
+    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
 
-    let oid = match parent {
-        Some(pid) => {
-            let parent_commit = repo.find_commit(pid)?;
-            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent_commit])?
+    if let Some(parent_commit) = &parent {
+        let head_tree = parent_commit.tree()?;
+        let diff = repo.diff_tree_to_tree(Some(&head_tree), Some(&tree), None)?;
+        if diff.deltas().len() == 0 {
+            return Err(git2::Error::from_str("nothing to commit"));
+        }
+    }
+
+    let oid = match &parent {
+        Some(parent_commit) => {
+            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[parent_commit])?
         }
         None => repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[])?,
     };

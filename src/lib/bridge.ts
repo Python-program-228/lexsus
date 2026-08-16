@@ -34,3 +34,7 @@ export function startWatch(): Promise<void> {
 export function spawnShell(): Promise<string> {
   return invoke("spawn_shell");
 }
+
+export function shellWrite(input: string): Promise<void> {
+  return invoke("shell_write", { input });
+}
