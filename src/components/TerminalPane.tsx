@@ -6,12 +6,23 @@ import "@xterm/xterm/css/xterm.css";
 import { PowerIcon, RotateCcwIcon, SquareTerminalIcon } from "lucide-react";
 import {
   claudeSpawn,
+  observeDetect,
+  observeStart,
+  observeStop,
   ptyKill,
   ptyResize,
   ptySpawn,
   ptyWrite,
 } from "../lib/bridge";
-import type { PtyExit, PtyOverflow, PtyOutput, PtySpawned } from "../lib/types";
+import type {
+  ExternalSession,
+  ObserveLine,
+  ObserveStatus,
+  PtyExit,
+  PtyOverflow,
+  PtyOutput,
+  PtySpawned,
+} from "../lib/types";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -30,14 +41,30 @@ interface TerminalPaneProps {
   cwd: string;
 }
 
-type Mode = "shell" | "claude";
+type Mode = "shell" | "claude" | "mirror";
+
+const OBSERVE_STYLE: Record<string, string> = {
+  text: "\x1b[0m",
+  thinking: "\x1b[2m",
+  tool: "\x1b[36m",
+  error: "\x1b[31m",
+  step: "\x1b[90m",
+};
+
+function writeObserveLine(term: Terminal, line: ObserveLine) {
+  const color = OBSERVE_STYLE[line.kind] ?? "\x1b[0m";
+  const prefix = line.kind === "thinking" ? "┈ " : "";
+  for (const seg of line.text.split("\n")) {
+    term.writeln(`${color}${prefix}${seg}\x1b[0m`);
+  }
+}
 
 /**
- * Interactive terminal pane (M1.2 + M1.3): an xterm.js instance fed by
+ * Interactive terminal pane (M1.2 + M1.3 + M3): an xterm.js instance fed by
  * the raw PTY byte stream (pty://output) and typing straight into the
- * session's stdin (pty_write). xterm sends `\r` for Enter — exactly what
- * cmd / PowerShell under ConPTY expect. "Claude Code" mode spawns the
- * claude CLI in the same session.
+ * session's stdin (pty_write). "Claude Code" mode spawns the claude CLI in
+ * the same session. "Mirror" mode (M3) is read-only: it tails an external
+ * opencode session running in this project and streams its activity.
  */
 export default function TerminalPane({ cwd }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -47,6 +74,8 @@ export default function TerminalPane({ cwd }: TerminalPaneProps) {
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [dropped, setDropped] = useState(0);
   const [mode, setMode] = useState<Mode>("shell");
+  const [external, setExternal] = useState<ExternalSession | null>(null);
+  const [observing, setObserving] = useState(false);
   const resizeTimer = useRef<number | undefined>(undefined);
   const modeRef = useRef<Mode>("shell");
 
@@ -58,6 +87,7 @@ export default function TerminalPane({ cwd }: TerminalPaneProps) {
     const container = containerRef.current;
     if (!container) return;
 
+    const isMirror = mode === "mirror";
     const term = new Terminal({
       fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
       fontSize: 13,
@@ -72,7 +102,7 @@ export default function TerminalPane({ cwd }: TerminalPaneProps) {
     termRef.current = term;
 
     term.onData((data) => {
-      ptyWrite(data).catch(() => {});
+      if (!isMirror) ptyWrite(data).catch(() => {});
     });
     term.onResize(({ rows, cols }) => {
       window.clearTimeout(resizeTimer.current);
@@ -109,6 +139,41 @@ export default function TerminalPane({ cwd }: TerminalPaneProps) {
     };
 
     void (async () => {
+      if (isMirror) {
+        term.clear();
+        term.writeln("\r\n\x1b[90m[mirror: external agent activity]\x1b[0m");
+        unlistens = [
+          await listen<ObserveLine>("observe://line", (e) => {
+            if (disposed || modeRef.current !== "mirror") return;
+            writeObserveLine(term, e.payload);
+          }),
+          await listen<ObserveStatus>("observe://status", (e) => {
+            if (disposed) return;
+            setObserving(e.payload.observing);
+            if (e.payload.session) setExternal(e.payload.session);
+          }),
+          await listen<{ ended: boolean }>("observe://ended", () => {
+            if (disposed) return;
+            setObserving(false);
+            term.writeln("\r\n\x1b[90m[mirror ended]\x1b[0m");
+          }),
+        ];
+        setObserving(true);
+        try {
+          const s = await observeStart();
+          if (disposed) return;
+          setExternal(s);
+        } catch (e) {
+          if (disposed) return;
+          setObserving(false);
+          term.writeln(`\r\n\x1b[31mmirror failed: ${String(e)}\x1b[0m`);
+          term.writeln(
+            "\r\n\x1b[90m[start an opencode session in this project to mirror it here]\x1b[0m",
+          );
+        }
+        return;
+      }
+
       unlistens = [
         await listen<PtyOutput>("pty://output", (e) => {
           if (!disposed) term.write(e.payload.data);
@@ -140,9 +205,34 @@ export default function TerminalPane({ cwd }: TerminalPaneProps) {
       window.clearTimeout(resizeTimer.current);
       term.dispose();
       termRef.current = null;
-      void ptyKill().catch(() => {});
+      if (isMirror) {
+        void observeStop().catch(() => {});
+      } else {
+        void ptyKill().catch(() => {});
+      }
     };
-  }, [cwd]);
+  }, [cwd, mode]);
+
+  // Poll for an external opencode session while not mirroring, so the header
+  // can advertise the Mirror tab even before the user opens it.
+  useEffect(() => {
+    if (mode === "mirror") return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const s = await observeDetect();
+        if (!cancelled) setExternal(s);
+      } catch {
+        // backend not reachable; keep last known state
+      }
+    };
+    void poll();
+    const t = window.setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [cwd, mode]);
 
   function restart() {
     termRef.current?.writeln("\r\n\x1b[90m[restarting]\x1b[0m");
@@ -166,6 +256,41 @@ export default function TerminalPane({ cwd }: TerminalPaneProps) {
     }
   }
 
+  function toggleMirror() {
+    const term = termRef.current;
+    if (!term) return;
+    if (observing) {
+      setObserving(false);
+      void observeStop().catch(() => {});
+      term.writeln("\r\n\x1b[90m[mirror stopped]\x1b[0m");
+    } else {
+      term.clear();
+      setObserving(true);
+      term.writeln("\r\n\x1b[90m[mirror resumed]\x1b[0m");
+      void observeStart()
+        .then((s) => {
+          if (modeRef.current === "mirror") setExternal(s);
+        })
+        .catch((e) => {
+          setObserving(false);
+          term.writeln(`\r\n\x1b[31mmirror failed: ${String(e)}\x1b[0m`);
+        });
+    }
+  }
+
+  const dirName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+  const currentPath = session?.cwd ?? cwd;
+  const sessionLabel =
+    mode === "mirror"
+      ? observing
+        ? `mirroring · ${external?.title || external?.session_id.slice(0, 8) || "opencode"}`
+        : "mirror idle"
+      : state === "idle"
+        ? "no session"
+        : state === "running"
+          ? `${session?.shell ?? "shell"} · ${dirName(currentPath)}`
+          : `exited (${exitCode ?? "?"})`;
+
   return (
     <Card className="h-full">
       <CardHeader>
@@ -176,21 +301,35 @@ export default function TerminalPane({ cwd }: TerminalPaneProps) {
             <span
               className={cn(
                 "size-2 rounded-full",
-                state === "running"
+                observing
                   ? "animate-pulse bg-emerald-500"
-                  : state === "exited"
-                    ? "bg-zinc-500"
-                    : "bg-zinc-700",
+                  : state === "running"
+                    ? "animate-pulse bg-emerald-500"
+                    : state === "exited"
+                      ? "bg-zinc-500"
+                      : "bg-zinc-700",
               )}
             />
-            <span className="text-xs font-normal text-muted-foreground">
-              {state === "idle"
-                ? "no session"
-                : state === "running"
-                  ? `${session?.shell ?? "shell"} · ${session?.cwd ?? cwd}`
-                  : `exited (${exitCode ?? "?"})`}
+            <span
+              className="max-w-48 truncate text-xs font-normal text-muted-foreground"
+              title={
+                mode === "mirror"
+                  ? `${external?.title} · ${external?.project_dir ?? ""}`
+                  : currentPath
+              }
+            >
+              {sessionLabel}
             </span>
           </span>
+          {mode !== "mirror" && external && (
+            <Badge
+              variant="outline"
+              className="max-w-44 truncate border-cyan-500/30 bg-cyan-500/10 text-cyan-400"
+              title={`external ${external.backend} session · ${external.title || external.session_id} · ${external.project_dir}`}
+            >
+              {external.backend} · {external.title || external.session_id.slice(0, 8)}
+            </Badge>
+          )}
           {dropped > 0 && (
             <Badge
               variant="outline"
@@ -204,15 +343,27 @@ export default function TerminalPane({ cwd }: TerminalPaneProps) {
         <CardDescription>
           {mode === "claude"
             ? "Claude Code CLI in this session"
-            : "plain shell session"}
+            : mode === "mirror"
+              ? "read-only mirror of the external agent session"
+              : "plain shell session"}
         </CardDescription>
         <CardAction className="flex items-center gap-2">
           <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
             <TabsList>
               <TabsTrigger value="shell">Shell</TabsTrigger>
               <TabsTrigger value="claude">Claude Code</TabsTrigger>
+              <TabsTrigger value="mirror">Mirror</TabsTrigger>
             </TabsList>
           </Tabs>
+          {mode === "mirror" && (
+            <Button
+              size="sm"
+              variant={observing ? "outline" : "default"}
+              onClick={toggleMirror}
+            >
+              {observing ? "Stop mirror" : "Start mirror"}
+            </Button>
+          )}
           <Tooltip>
             <TooltipTrigger
               render={
@@ -220,7 +371,7 @@ export default function TerminalPane({ cwd }: TerminalPaneProps) {
                   size="icon-sm"
                   variant="outline"
                   onClick={restart}
-                  disabled={state === "idle"}
+                  disabled={state === "idle" || mode === "mirror"}
                 />
               }
             >
@@ -235,6 +386,7 @@ export default function TerminalPane({ cwd }: TerminalPaneProps) {
                   size="icon-sm"
                   variant="destructive"
                   onClick={() => ptyKill().catch(() => {})}
+                  disabled={mode === "mirror"}
                 />
               }
             >

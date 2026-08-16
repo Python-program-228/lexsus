@@ -4,6 +4,8 @@ pub mod db;
 
 pub mod git;
 
+pub mod observe;
+
 pub mod parser;
 
 pub mod pty;
@@ -44,6 +46,10 @@ pub(crate) struct AppState {
     pub(crate) objective: Mutex<Option<String>>,
     /// Recent "editing X" steps, for watcher cross-correlation.
     pub(crate) recent_edits: Mutex<VecDeque<(String, Instant)>>,
+    /// Active external-session observer, if one is mirroring.
+    pub(crate) observe: Mutex<Option<observe::ObserveHandle>>,
+    /// Trace session id used by the observer's recorded steps.
+    pub(crate) observe_id: Mutex<Option<i64>>,
 }
 
 /// The single active interactive session may only live inside the/// configured project root — groundwork for M2's path-containment model.
@@ -277,7 +283,7 @@ fn run_command(
 
 /// Spawn the single interactive PTY session (shell). Any prior session is/// killed and replaced — sessions never accumulate.
 #[tauri::command]
-fn pty_spawn(
+async fn pty_spawn(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     cwd: String,
@@ -305,7 +311,7 @@ fn pty_spawn(
 
 /// Spawn the interactive session running Claude Code (M1.3).
 #[tauri::command]
-fn claude_spawn(
+async fn claude_spawn(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     cwd: String,
@@ -448,7 +454,7 @@ fn pty_resize(state: State<'_, AppState>, rows: u16, cols: u16) -> Result<(), St
 
 /// Kill the interactive session. The emit loop clears it on exit.
 #[tauri::command]
-fn pty_kill(state: State<'_, AppState>) -> Result<(), String> {
+async fn pty_kill(state: State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.session.lock().unwrap();
     let session = guard
         .as_mut()
@@ -515,6 +521,126 @@ fn start_watch(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), 
             }
         }
     });
+    Ok(())
+}
+
+// --- observe: mirror external agent sessions (M3) ----------------------------/// Look for a live external coding-agent session (opencode, later Claude Code)/// bound to the configured project root. Async: reading the opencode store/// must never block the UI thread.
+#[tauri::command]
+async fn observe_detect(
+    state: State<'_, AppState>,
+) -> Result<Option<observe::ExternalSession>, String> {
+    let root = match state.project_root.lock().unwrap().clone() {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    Ok(observe::backends()
+        .into_iter()
+        .find_map(|b| b.detect(&root)))
+}
+
+/// Start mirroring the detected external session; idempotent.
+#[tauri::command]
+async fn observe_start(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<observe::ExternalSession, String> {
+    if let Some(h) = state.observe.lock().unwrap().as_ref() {
+        return Ok(h.session.clone());
+    }
+    let root = state
+        .project_root
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "project root not set".to_string())?;
+    let (backend, session) = observe::backends()
+        .into_iter()
+        .filter_map(|b| b.detect(&root).map(|s| (b, s)))
+        .next()
+        .ok_or_else(|| "no external opencode session detected".to_string())?;
+
+    let (tx, rx) = std::sync::mpsc::channel::<observe::ObserveOut>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let session2 = session.clone();
+    let stop2 = stop.clone();
+    thread::spawn(move || backend.tail(&session2, tx, stop2));
+    let sid = db::begin_session(&state.conn.lock().unwrap(), "opencode-external").ok();
+    *state.observe_id.lock().unwrap() = sid;
+
+    let app2 = app.clone();
+    let st2 = stop.clone();
+    thread::spawn(move || {
+        let state = app2.state::<AppState>();
+        let mut last_activity = Instant::now();
+        loop {
+            match rx.recv_timeout(Duration::from_millis(400)) {
+                Ok(out) => {
+                    let _ = app2.emit("observe://line", &out);
+                    if !out.parse.is_empty() {
+                        let steps = state.parser.lock().unwrap().feed(&out.parse);
+                        let osid = *state.observe_id.lock().unwrap();
+                        for step in steps {
+                            let _ = db::record_trace_step(
+                                &state.conn.lock().unwrap(),
+                                osid,
+                                &step.kind,
+                                step.file.as_deref(),
+                                step.command.as_deref(),
+                                step.detail.as_deref(),
+                                false,
+                            );
+                            if step.kind == "editing" {
+                                let mut ring = state.recent_edits.lock().unwrap();
+                                ring.push_back((
+                                    step.file.clone().unwrap_or_default(),
+                                    Instant::now(),
+                                ));
+                                while ring.len() > 64 {
+                                    ring.pop_front();
+                                }
+                            }
+                            let _ = app2.emit("trace://step", step);
+                        }
+                    }
+                    last_activity = Instant::now();
+                }
+                // No new lines yet — keep waiting; this is not the end.
+                Err(RecvTimeoutError::Timeout) => {}
+                // The tail thread is gone — the mirror is over.
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            if st2.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+        let osid = state.observe_id.lock().unwrap().take();
+        let _ = db::end_session(&state.conn.lock().unwrap(), osid.unwrap_or(-1), None);
+        let _ = app2.emit(
+            "observe://ended",
+            serde_json::json!({"idle_ms": last_activity.elapsed().as_millis()}),
+        );
+    });
+
+    let handle = observe::ObserveHandle {
+        stop,
+        session: session.clone(),
+        started: Instant::now(),
+    };
+    *state.observe.lock().unwrap() = Some(handle);
+    let _ = app.emit(
+        "observe://status",
+        observe::ObserveStatusWrapper::observing(&session),
+    );
+    Ok(session)
+}
+
+/// Stop mirroring the external session.
+#[tauri::command]
+async fn observe_stop(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(h) = state.observe.lock().unwrap().take() {
+        h.stop.store(true, Ordering::Relaxed);
+        let _ = app.emit("observe://status", observe::ObserveStatusWrapper::idle());
+    }
     Ok(())
 }
 
@@ -747,6 +873,8 @@ pub fn run() {
             session_id: Mutex::new(None),
             objective: Mutex::new(None),
             recent_edits: Mutex::new(VecDeque::new()),
+            observe: Mutex::new(None),
+            observe_id: Mutex::new(None),
         })
         .setup(|app| {
             // Auto-init: app-data SQLite, persisted settings, WS server.
@@ -787,6 +915,9 @@ pub fn run() {
             git_commit_diff,
             run_command,
             start_watch,
+            observe_detect,
+            observe_start,
+            observe_stop,
             pty_spawn,
             pty_write,
             pty_resize,

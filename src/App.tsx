@@ -194,8 +194,9 @@ export default function App() {
             >
               <SelectTrigger
                 size="sm"
-                className="w-full min-w-0 flex-1 font-mono text-xs"
+                className="w-full min-w-0 flex-1 truncate font-mono text-xs"
                 aria-label="Pick a folder"
+                title={projectRoot}
               >
                 <SelectValue placeholder="Pick a folder…" />
               </SelectTrigger>
@@ -209,7 +210,9 @@ export default function App() {
                     selectItems.map((p) => (
                       <SelectItem key={p} value={p}>
                         <FolderIcon className="shrink-0 text-muted-foreground" />
-                        <span className="truncate font-mono text-xs">{p}</span>
+                        <span className="truncate font-mono text-xs" title={p}>
+                          {p}
+                        </span>
                       </SelectItem>
                     ))
                   )}
@@ -239,7 +242,7 @@ export default function App() {
           </div>
           {projectRoot ? (
             <p
-              className="truncate text-[11px] text-muted-foreground"
+              className="break-all font-mono text-[11px] leading-relaxed text-muted-foreground"
               title={projectRoot}
             >
               {projectRoot}

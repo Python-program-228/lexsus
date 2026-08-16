@@ -5,6 +5,7 @@ import type {
   BridgeTool,
   CommandOutput,
   CommitInfo,
+  ExternalSession,
   FileDiff,
   GitFileStatus,
   Handoff,
@@ -113,6 +114,20 @@ export function ptyKill(): Promise<void> {
 
 export function startWatch(): Promise<void> {
   return invoke("start_watch");
+}
+
+// --- M3 external session mirror ----------------------------------------------
+
+export function observeDetect(): Promise<ExternalSession | null> {
+  return invoke("observe_detect");
+}
+
+export function observeStart(): Promise<ExternalSession> {
+  return invoke("observe_start");
+}
+
+export function observeStop(): Promise<void> {
+  return invoke("observe_stop");
 }
 
 // --- M2 bridge ---------------------------------------------------------------

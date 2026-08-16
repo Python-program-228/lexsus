@@ -115,3 +115,24 @@ export interface Handoff {
   files: string[];
   generated_at: string;
 }
+
+// --- M3 external session mirror ----------------------------------------------
+
+export interface ExternalSession {
+  backend: string;
+  session_id: string;
+  title: string;
+  cwd: string;
+  last_ts: number;
+  project_dir: string;
+}
+
+export interface ObserveLine {
+  kind: string; // text | thinking | tool | error | step
+  text: string;
+}
+
+export interface ObserveStatus {
+  observing: boolean;
+  session: ExternalSession | null;
+}
