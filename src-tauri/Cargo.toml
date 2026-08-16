@@ -26,3 +26,7 @@ git2 = { version = "0.19", features = ["vendored-libgit2", "vendored-openssl"] }
 portable-pty = "0.8"
 notify = "6"
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Local WebSocket server for the browser extension (M2) — loopback only,
+# plain ws:// on 127.0.0.1, no TLS needed.
+tungstenite = "0.24"

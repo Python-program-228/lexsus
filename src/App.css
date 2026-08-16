@@ -1,0 +1,609 @@
+:root {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  color-scheme: dark;
+  color: #e6e6e6;
+  background-color: #1a1a1a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 180px;
+  background: #111;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #9a9a9a;
+  margin-top: 16px;
+}
+
+.side-label {
+  font-size: 11px;
+  color: #9a9a9a;
+  margin-top: 8px;
+}
+
+.side-row {
+  display: flex;
+  gap: 6px;
+}
+
+.side-row input {
+  min-width: 0;
+  flex: 1;
+  font-size: 12px;
+}
+
+.side-row button {
+  padding: 6px 10px;
+  flex-shrink: 0;
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  overflow: auto;
+}
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: #242424;
+  border-radius: 6px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+.panel {
+  background: #222;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.panel h3 {
+  margin-top: 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid #333;
+}
+
+input {
+  padding: 6px;
+  margin-right: 6px;
+  background: #111;
+  color: #e6e6e6;
+  border: 1px solid #444;
+  border-radius: 4px;
+  min-width: 200px;
+}
+
+button {
+  padding: 6px 12px;
+  background: #2f6feb;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #3b7bfa;
+}
+
+.error {
+  color: #f87171;
+  background: #2a1414;
+  padding: 8px;
+  border-radius: 6px;
+}
+
+.term-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.term-out {
+  background: #0d0d0d;
+  padding: 10px;
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.terminal-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.term-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.term-title {
+  font-size: 13px;
+}
+
+.term-meta {
+  color: #9a9a9a;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.term-header .spacer {
+  flex: 1;
+}
+
+.term-header button.danger {
+  background: #b91c1c;
+}
+
+.term-header button.danger:hover {
+  background: #dc2626;
+}
+
+.term-header button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.term-body {
+  height: 380px;
+  background: #0d0d0d;
+  border-radius: 6px;
+  overflow: hidden;
+  padding: 4px;
+}
+
+.badge {
+  background: #713f12;
+  color: #fde68a;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.dot-idle {
+  background: #6b7280;
+}
+
+.dot-exited {
+  background: #ef4444;
+}
+
+.muted {
+  color: #9a9a9a;
+}
+
+/* --- layout ---------------------------------------------------------------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.panel-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.panel-head .spacer {
+  flex: 1;
+}
+
+.side-hint {
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.mode-btn {
+  background: #374151;
+}
+
+.mode-btn.active {
+  background: #059669;
+}
+
+/* --- activity trace (M1.4) -------------------------------------------------- */
+
+.trace-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.trace-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #1b1b1b;
+}
+
+.trace-icon {
+  flex-shrink: 0;
+}
+
+.trace-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-cmd {
+  color: #93c5fd;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-agent {
+  font-size: 10px;
+  color: #6b7280;
+  text-transform: uppercase;
+}
+
+.trace-ok {
+  color: #4ade80;
+  font-size: 11px;
+}
+
+.trace-wait {
+  color: #facc15;
+  font-size: 11px;
+}
+
+.trace-error .trace-label {
+  color: #f87171;
+}
+
+.trace-test .trace-label {
+  color: #c4b5fd;
+}
+
+.trace-collapse button {
+  background: transparent;
+  color: #93c5fd;
+  border: 1px dashed #3b4754;
+  font-size: 12px;
+  width: 100%;
+  padding: 4px;
+}
+
+/* --- git panel (M1.7) ------------------------------------------------------ */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tabs button {
+  background: transparent;
+  color: #9a9a9a;
+  border: 1px solid #333;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.tabs button.active {
+  color: white;
+  background: #2f6feb;
+  border-color: #2f6feb;
+}
+
+.toolbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.git-status table {
+  font-size: 12px;
+}
+
+.row-selected {
+  background: #22314d;
+}
+
+.status-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.status-M { background: #713f12; color: #fde68a; }
+.status-A { background: #14532d; color: #bbf7d0; }
+.status-D { background: #7f1d1d; color: #fecaca; }
+.status-R { background: #1e3a5f; color: #bfdbfe; }
+.status-U { background: #581c87; color: #e9d5ff; }
+.status-\? { background: #374151; color: #d1d5db; }
+
+.diff-view {
+  background: #0d0d0d;
+  border-radius: 6px;
+  padding: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.commit-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.commit-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.branch-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.branch-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  border-bottom: 1px solid #333;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+}
+
+.branch-current {
+  color: #4ade80;
+}
+
+.commit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.commit-list li {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  border-bottom: 1px solid #333;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.commit-msg {
+  font-weight: 600;
+}
+
+.error-inline {
+  color: #f87171;
+  font-size: 12px;
+}
+
+/* --- bridge panel (M2) ------------------------------------------------------ */
+
+.pair-code {
+  font-family: ui-monospace, monospace;
+  font-size: 18px;
+  letter-spacing: 4px;
+  color: #fde68a;
+  background: #2a2408;
+  padding: 2px 10px;
+  border-radius: 6px;
+}
+
+.approval-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 8px;
+  margin-top: 8px;
+}
+
+.approval-summary {
+  flex: 1;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+}
+
+.approval-card .danger {
+  background: #b91c1c;
+}
+
+.sandbox {
+  margin-top: 8px;
+}
+
+.sandbox summary,
+.audit summary {
+  cursor: pointer;
+  color: #93c5fd;
+  font-size: 13px;
+}
+
+.sandbox-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.sandbox-row label {
+  font-size: 11px;
+  color: #9a9a9a;
+  width: 90px;
+  flex-shrink: 0;
+  font-family: ui-monospace, monospace;
+}
+
+.sandbox-row input {
+  flex: 1;
+  min-width: 0;
+  margin-right: 0;
+  font-size: 12px;
+}
+
+.sandbox-out {
+  background: #0d0d0d;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 11px;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.audit {
+  margin-top: 8px;
+}
+
+.audit-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
+
+.audit-list li {
+  padding: 3px 0;
+  border-bottom: 1px dotted #333;
+}
+
+.audit-denied {
+  color: #f87171;
+}
+
+/* --- handoff panel (M2) ----------------------------------------------------- */
+
+.handoff-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.handoff-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.handoff-row label {
+  font-size: 11px;
+  color: #9a9a9a;
+}
+
+.handoff-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.handoff-stats {
+  display: flex;
+  gap: 16px;
+}
+
+.handoff-stats span {
+  font-size: 12px;
+  color: #9a9a9a;
+}
+
+.handoff-stats b {
+  color: #e6e6e6;
+}
+
+.handoff-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
