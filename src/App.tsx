@@ -166,7 +166,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="dark min-h-screen bg-zinc-950 bg-[radial-gradient(1100px_600px_at_75%_-10%,rgba(139,92,246,0.14),transparent),radial-gradient(900px_550px_at_5%_110%,rgba(56,189,248,0.1),transparent)] text-zinc-100">
+    <div className="dark min-h-screen bg-zinc-950 text-zinc-100">
       <Toast.Provider />
       <div className="flex min-h-screen">
         <aside className="glass-sidebar flex w-60 shrink-0 flex-col gap-8 p-5">
@@ -192,7 +192,7 @@ export default function App() {
               <span
                 className={
                   watching
-                    ? "status-dot h-2 w-2 rounded-full bg-emerald-500"
+                    ? "h-2 w-2 rounded-full bg-emerald-500"
                     : "h-2 w-2 rounded-full bg-zinc-600"
                 }
               />
