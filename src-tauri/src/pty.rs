@@ -103,6 +103,6 @@ pub fn spawn_interactive_shell(cwd: &std::path::Path) -> InteractiveShell {
 
     InteractiveShell {
         output: rx,
-        writer: pair.master.take_writer(),
+        writer: pair.master.take_writer().expect("take writer failed"),
     }
 }

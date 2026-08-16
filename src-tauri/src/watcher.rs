@@ -1,5 +1,5 @@
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
@@ -12,7 +12,7 @@ pub struct FsEvent {
 }
 
 /// Start a recursive watcher on `path` and return a channel of normalized events.
-pub fn watch(path: &PathBuf) -> notify::Result<Receiver<FsEvent>> {
+pub fn watch(path: &Path) -> notify::Result<Receiver<FsEvent>> {
     let (tx, rx) = std::sync::mpsc::channel::<FsEvent>();
 
     let mut watcher = RecommendedWatcher::new(

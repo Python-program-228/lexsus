@@ -24,13 +24,15 @@ fn init_database(state: State<'_, AppState>, db_path: String) -> Result<Vec<Stri
     Ok(applied)
 }
 
-/// Set the project folder this app monitors.
+/// Set the project folder this app monitors. Must be a directory and a git
+/// repository, so the git panel has real state to show immediately.
 #[tauri::command]
 fn set_project_root(state: State<'_, AppState>, path: String) -> Result<(), String> {
     let p = std::path::PathBuf::from(path);
     if !p.is_dir() {
         return Err(format!("not a directory: {}", p.display()));
     }
+    git::open_repo(&p).map_err(|_| format!("not a git repository: {}", p.display()))?;
     *state.project_root.lock().unwrap() = Some(p);
     Ok(())
 }
@@ -138,6 +140,7 @@ fn shell_write(state: State<'_, AppState>, input: String) -> Result<(), String> 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             conn: Mutex::new(rusqlite::Connection::open_in_memory().expect("in-memory db")),
             project_root: Mutex::new(None),
