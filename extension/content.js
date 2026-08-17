@@ -11,6 +11,8 @@ const HANDOFF_PROMPT = (h) =>
     `Progress: ${h.progress_percent}% · Files changed: ${h.files_changed} · Errors remaining: ${h.errors_remaining}`,
     `Next step: ${h.next_step ?? "review the project state"}`,
     h.files && h.files.length > 0 ? `Files involved: ${h.files.join(", ")}` : "",
+    h.context ? `Task context so far: ${h.context}` : "",
+    h.end_reason ? `Where the previous session stopped: ${h.end_reason}` : "",
     ``,
     `You are now the coding agent for the local project on the paired machine.`,
     `To act on the real filesystem you may use these tools, one per line:`,
@@ -57,6 +59,33 @@ function insertIntoComposer(text) {
     el.dispatchEvent(new Event("input", { bubbles: true }));
   }
   return true;
+}
+
+function submitComposer() {
+  const btn =
+    document.querySelector('button[data-testid="send-button"]') ||
+    document.querySelector('button[aria-label="Send prompt"]') ||
+    document.querySelector('button[aria-label="Send message"]') ||
+    document.querySelector("#composer-submit-button");
+  if (btn) {
+    btn.click();
+    return true;
+  }
+  // Last resort: Enter on the focused composer.
+  const el = findComposer();
+  if (el) {
+    el.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+      }),
+    );
+    return true;
+  }
+  return false;
 }
 
 // --- tool capture -------------------------------------------------------------
@@ -142,8 +171,15 @@ function card(html) {
   return el;
 }
 
+const TARGET_LABEL = {
+  claudeai: "Continue with Claude.ai",
+  gemini: "Continue with Gemini",
+  chatgpt: "Continue with ChatGPT",
+};
+
 function showHandoffCard(h) {
   const root = ensureRoot();
+  const label = TARGET_LABEL[h.target] || TARGET_LABEL.chatgpt;
   const el = card(`
     <div style="font-weight:700;margin-bottom:6px;">Bridge handoff ready</div>
     <div style="color:#9a9a9a;margin-bottom:4px;">${h.objective}</div>
@@ -152,16 +188,23 @@ function showHandoffCard(h) {
       <b>${h.files_changed}</b> files changed ·
       <b style="color:#f87171;">${h.errors_remaining}</b> errors remaining
       ${h.next_step ? `<div style="color:#93c5fd;margin-top:4px;">next: ${h.next_step}</div>` : ""}
+      ${h.context ? `<div style="color:#9a9a9a;margin-top:4px;">${escapeHtml(h.context.slice(0, 200))}</div>` : ""}
     </div>
     <button id="acb-continue" style="background:#2f6feb;color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;">
-      Continue with ChatGPT
+      ${label}
     </button>
   `);
-  el.querySelector("#acb-continue").addEventListener("click", () => {
-    insertIntoComposer(HANDOFF_PROMPT(h));
+  const go = () => {
+    const inserted = insertIntoComposer(HANDOFF_PROMPT(h));
+    if (inserted && h.auto) {
+      // Give the composer a beat to settle, then submit.
+      setTimeout(submitComposer, 300);
+    }
     el.remove();
-  });
+  };
+  el.querySelector("#acb-continue").addEventListener("click", go);
   root.appendChild(el);
+  if (h.auto) go();
 }
 
 function showToolWidget(msg) {

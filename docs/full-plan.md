@@ -496,6 +496,7 @@ Validate with 5–10 real developers.
 ### Phase 3 — Automatic Failover
 - Detect local-agent interruption automatically and offer web-AI continuation.
 - **Exit gate:** automatic continuation works without re-explanation.
+- **Implemented:** `failover.rs` state machines (local: `inactive → working → stalled → interrupted`, vetoed by any file change; web: WS-drop / silence detection), `transcript.rs` Claude Code JSONL reader feeding objective + context + end reason into the handoff, auto-delivery (`auto:true` → the extension inserts and submits the prompt), web→web failover to Claude.ai/Gemini + web→local hand-back, `failover_log` telemetry (successful continuation rate), and a failover panel in the UI.
 
 ### Phase 4 — Orchestration
 - Route parts of a task across local + multiple web AIs with single project state.

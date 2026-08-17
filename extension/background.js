@@ -5,6 +5,42 @@
 
 const WS_URL = "ws://127.0.0.1:45241";
 
+const TARGET_HOSTS = {
+  chatgpt: "https://chatgpt.com/*",
+  claudeai: "https://claude.ai/*",
+  gemini: "https://gemini.google.com/*",
+};
+
+// Route a message to every tab that can act on it: the handoff target
+// (if any) first, then all sites as a fallback so a queued handoff is
+// picked up wherever the user is.
+function forwardToTabs(msg, preferredHost) {
+  const send = (url) => {
+    chrome.tabs.query({ url }, (tabs) => {
+      for (const t of tabs) {
+        chrome.tabs.sendMessage(t.id, msg).catch(() => {});
+      }
+    });
+  };
+  if (preferredHost) {
+    chrome.tabs.query({ url: preferredHost }, (tabs) => {
+      if (tabs && tabs.length > 0) {
+        for (const t of tabs) {
+          chrome.tabs.sendMessage(t.id, msg).catch(() => {});
+        }
+      } else {
+        for (const url of Object.values(TARGET_HOSTS)) send(url);
+      }
+    });
+  } else {
+    for (const url of Object.values(TARGET_HOSTS)) send(url);
+  }
+}
+
+function hostForTarget(target) {
+  return TARGET_HOSTS[target] || TARGET_HOSTS.chatgpt;
+}
+
 let socket = null;
 let paired = false;
 let reconnectDelay = 1000;
@@ -67,18 +103,10 @@ function connect() {
         pingMissed = 0;
         break;
       case "tool-result":
-        chrome.tabs.query({ url: "https://chatgpt.com/*" }, (tabs) => {
-          for (const t of tabs) {
-            chrome.tabs.sendMessage(t.id, msg).catch(() => {});
-          }
-        });
+        forwardToTabs(msg, null);
         break;
       case "handoff":
-        chrome.tabs.query({ url: "https://chatgpt.com/*" }, (tabs) => {
-          for (const t of tabs) {
-            chrome.tabs.sendMessage(t.id, msg).catch(() => {});
-          }
-        });
+        forwardToTabs(msg, hostForTarget(msg.payload && msg.payload.target));
         break;
     }
   };

@@ -149,6 +149,23 @@ export default function HandoffPanel() {
               </p>
             )}
 
+            {handoff.end_reason && (
+              <p className="text-[11px] text-muted-foreground">
+                {handoff.end_reason}
+              </p>
+            )}
+
+            {handoff.context && (
+              <details className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                <summary className="cursor-pointer text-[11px] text-muted-foreground">
+                  task context (from your Claude Code transcript)
+                </summary>
+                <p className="mt-1 text-xs leading-relaxed text-foreground/80">
+                  {handoff.context}
+                </p>
+              </details>
+            )}
+
             <Separator />
 
             <div className="flex flex-wrap gap-2">

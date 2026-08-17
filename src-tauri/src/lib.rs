@@ -2,11 +2,15 @@ pub mod bridge;
 
 pub mod db;
 
+pub mod failover;
+
 pub mod git;
 
 pub mod pty;
 
 pub mod shell;
+
+pub mod transcript;
 
 pub mod watcher;
 
@@ -38,6 +42,8 @@ pub(crate) struct AppState {
     pub(crate) objective: Mutex<Option<String>>,
     /// Recent "editing X" steps, for watcher cross-correlation.
     pub(crate) recent_edits: Mutex<VecDeque<(String, Instant)>>,
+    /// Automatic-failover state machines (local + web directions).
+    pub(crate) failover: Mutex<failover::ActivityMonitor>,
 }
 
 /// A trace step emitted to the UI (mirrors `TraceStep` in the frontend).
@@ -199,6 +205,14 @@ fn start_watch(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), 
                 "fs://event",
                 serde_json::json!({"path": rel, "kind": ev.kind}),
             );
+
+            // Local activity: any file change counts as "the developer's
+            // own terminal is working" and vetoes a pending failover.
+            state
+                .failover
+                .lock()
+                .unwrap()
+                .record_activity(failover::Agent::Local, "fs");
 
             // Grounding: did the web AI recently claim to edit this file?
             let confirmed = {
@@ -374,6 +388,12 @@ pub(crate) fn record_tool_trace(state: &AppState, app: &AppHandle, tool: &bridge
             ts: now_millis(),
         },
     );
+    // Web activity: the paired web AI is making real tool calls.
+    state
+        .failover
+        .lock()
+        .unwrap()
+        .record_activity(failover::Agent::Web, "tool");
     if kind == "editing" {
         if let Some(file) = file {
             let mut ring = state.recent_edits.lock().unwrap();
@@ -419,7 +439,8 @@ fn set_objective(state: State<'_, AppState>, text: String) -> Result<(), String>
     Ok(())
 }
 
-/// Handoff card payload, built from persisted trace state.
+/// Handoff card payload, built from persisted trace state + (optionally)
+/// the developer's own Claude Code transcript for real task context.
 #[derive(Clone, serde::Serialize)]
 pub struct Handoff {
     pub objective: String,
@@ -428,12 +449,21 @@ pub struct Handoff {
     pub errors_remaining: usize,
     pub next_step: Option<String>,
     pub files: Vec<String>,
+    pub context: Option<String>,
+    pub end_reason: Option<String>,
     pub generated_at: String,
 }
 
 /// Build the handoff card from persisted trace state (shared by the
 /// desktop command and the extension's handoff-request).
 pub(crate) fn build_handoff_impl(state: &AppState) -> Result<Handoff, String> {
+    // Transcript first (reads ~/.claude), then DB. Read root before
+    // taking the DB lock so parsing never blocks the app.
+    let root = state.project_root.lock().unwrap().clone();
+    let transcript = root
+        .as_deref()
+        .and_then(transcript::load_for)
+        .filter(|t| t.objective.is_some() || t.message_snippet.is_some());
     let conn = state.conn.lock().unwrap();
     let stats = db::trace_stats(&conn).map_err(|e| e.to_string())?;
     let mut stmt = conn
@@ -451,7 +481,10 @@ pub(crate) fn build_handoff_impl(state: &AppState) -> Result<Handoff, String> {
         .lock()
         .unwrap()
         .clone()
+        .or_else(|| transcript.as_ref().and_then(|t| t.objective.clone()))
         .unwrap_or_else(|| "Continue the interrupted coding task".to_string());
+    let context = transcript.as_ref().and_then(|t| t.message_snippet.clone());
+    let end_reason = transcript.as_ref().and_then(|t| t.end_reason.clone());
 
     // Honest heuristic progress: test results and error count shape it.
     let progress_percent = if stats.steps == 0 {
@@ -474,6 +507,8 @@ pub(crate) fn build_handoff_impl(state: &AppState) -> Result<Handoff, String> {
         errors_remaining: stats.errors,
         next_step: stats.last_step,
         files,
+        context,
+        end_reason,
         generated_at,
     })
 }
@@ -495,6 +530,211 @@ fn handoff_send(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<Han
     Ok(handoff)
 }
 
+// --- automatic failover -------------------------------------------------------
+
+/// Direction A trigger: the developer's own terminal went quiet for long
+/// enough. Build the enriched handoff and push it to the web AI with
+/// `auto: true` so it picks the task up without being asked.
+fn run_local_failover(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let idle = failover::idle_ms(&state.failover.lock().unwrap(), failover::Agent::Local);
+    let Ok(handoff) = build_handoff_impl(&state) else {
+        let _ = app.emit(
+            "failover://local",
+            serde_json::json!({"ok": false, "idle_ms": idle, "error": "handoff build failed"}),
+        );
+        return;
+    };
+    let mut payload = match serde_json::to_value(&handoff) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = app.emit(
+                "failover://local",
+                serde_json::json!({"ok": false, "idle_ms": idle, "error": format!("handoff serialization failed: {e}")}),
+            );
+            return;
+        }
+    };
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("auto".into(), serde_json::json!(true));
+        obj.insert("direction".into(), serde_json::json!("local_to_web"));
+        obj.insert("target".into(), serde_json::json!("chatgpt"));
+    }
+    let delivered = ws::push_handoff(app, &payload);
+    let payload_str = payload.to_string();
+    let _ = db::record_failover(
+        &state.conn.lock().unwrap(),
+        &db::NewFailover {
+            direction: "local_to_web",
+            trigger: "inactivity",
+            idle_ms: idle,
+            payload: Some(&payload_str),
+            target: Some("chatgpt"),
+            delivered,
+            outcome: if delivered {
+                Some("auto-continued on ChatGPT")
+            } else {
+                Some("unpaired — offered in-app")
+            },
+        },
+    );
+    let _ = app.emit(
+        "failover://local",
+        serde_json::json!({"ok": true, "delivered": delivered, "idle_ms": idle, "handoff": handoff}),
+    );
+}
+
+/// Direction B trigger: the paired web AI died mid-work (extension WS
+/// dropped or it went silent). Surface a card offering another web AI or
+/// handing back to the local terminal.
+fn run_web_failover(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let idle = failover::idle_ms(&state.failover.lock().unwrap(), failover::Agent::Web);
+    let ws_down = !state.ws_connected.load(std::sync::atomic::Ordering::SeqCst);
+    let trigger = if ws_down { "ws_drop" } else { "inactivity" };
+    let _ = db::record_failover(
+        &state.conn.lock().unwrap(),
+        &db::NewFailover {
+            direction: "web_to_web",
+            trigger,
+            idle_ms: idle,
+            payload: None,
+            target: None,
+            delivered: false,
+            outcome: Some("offered switch in app"),
+        },
+    );
+    let handoff = build_handoff_impl(&state).ok();
+    let _ = app.emit(
+        "failover://web",
+        serde_json::json!({"idle_ms": idle, "trigger": trigger, "handoff": handoff}),
+    );
+}
+
+/// The failover ticker: evaluate both state machines periodically and act
+/// on transitions. Spawned once at startup.
+fn spawn_failover_ticker(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(30));
+        let state = app.state::<AppState>();
+        let ws_connected = state.ws_connected.load(std::sync::atomic::Ordering::SeqCst);
+        let now = Instant::now();
+        let mut monitor = state.failover.lock().unwrap();
+        let local = monitor.check(failover::Agent::Local, false, now);
+        let web = monitor.check(failover::Agent::Web, ws_connected, now);
+        let status = serde_json::json!({
+            "local": monitor.state(failover::Agent::Local).label(),
+            "web": monitor.state(failover::Agent::Web).label(),
+            "local_idle_ms": failover::idle_ms(&monitor, failover::Agent::Local),
+            "web_idle_ms": failover::idle_ms(&monitor, failover::Agent::Web),
+        });
+        drop(monitor);
+        let _ = app.emit("failover://status", status);
+        if local == failover::Check::Interrupted {
+            run_local_failover(&app);
+        }
+        if web == failover::Check::Interrupted {
+            run_web_failover(&app);
+        }
+    });
+}
+
+/// Current failover state (both directions) for the UI status indicator.
+#[tauri::command]
+fn failover_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let monitor = state.failover.lock().unwrap();
+    Ok(serde_json::json!({
+        "local": monitor.state(failover::Agent::Local).label(),
+        "web": monitor.state(failover::Agent::Web).label(),
+        "local_idle_ms": failover::idle_ms(&monitor, failover::Agent::Local),
+        "web_idle_ms": failover::idle_ms(&monitor, failover::Agent::Web),
+    }))
+}
+
+/// Reset a failover state machine (dismiss / keep waiting / hand back).
+#[tauri::command]
+fn failover_reset(state: State<'_, AppState>, agent: String) -> Result<(), String> {
+    let mut monitor = state.failover.lock().unwrap();
+    let agent = match agent.as_str() {
+        "local" => failover::Agent::Local,
+        "web" => failover::Agent::Web,
+        _ => return Err("agent must be 'local' or 'web'".into()),
+    };
+    monitor.reset(agent);
+    Ok(())
+}
+
+/// Direction B continuation: deliver the current handoff to a chosen
+/// target (`chatgpt | claudeai | gemini`), or hand back to the local
+/// terminal (`local`).
+#[tauri::command]
+fn failover_deliver(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    target: String,
+) -> Result<Handoff, String> {
+    if !matches!(target.as_str(), "chatgpt" | "claudeai" | "gemini" | "local") {
+        return Err("target must be chatgpt, claudeai, gemini or local".into());
+    }
+    let handoff = build_handoff_impl(&state)?;
+    if target == "local" {
+        // Hand back: the developer resumes in their own terminal. Log it
+        // and re-arm the web monitor.
+        let _ = db::record_failover(
+            &state.conn.lock().unwrap(),
+            &db::NewFailover {
+                direction: "web_to_local",
+                trigger: "manual",
+                idle_ms: 0,
+                payload: None,
+                target: Some("local"),
+                delivered: false,
+                outcome: Some("developer resumes locally"),
+            },
+        );
+        state.failover.lock().unwrap().reset(failover::Agent::Web);
+        return Ok(handoff);
+    }
+    let payload = serde_json::to_value(&handoff)
+        .map(|mut v| {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("auto".into(), serde_json::json!(true));
+                obj.insert("direction".into(), serde_json::json!("web_to_web"));
+                obj.insert("target".into(), serde_json::json!(target));
+            }
+            v
+        })
+        .map_err(|e| e.to_string())?;
+    let delivered = ws::push_handoff(&app, &payload);
+    let _ = db::record_failover(
+        &state.conn.lock().unwrap(),
+        &db::NewFailover {
+            direction: "web_to_web",
+            trigger: "manual",
+            idle_ms: 0,
+            payload: Some(&payload.to_string()),
+            target: Some(&target),
+            delivered,
+            outcome: if delivered {
+                Some("delivered to target")
+            } else {
+                Some("unpaired — offered in-app")
+            },
+        },
+    );
+    state.failover.lock().unwrap().reset(failover::Agent::Web);
+    Ok(handoff)
+}
+
+/// Recent automatic-failover records (feeds the continuation-rate metric).
+#[tauri::command]
+fn failover_log(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<db::FailoverEntry>, String> {
+    db::failover_log(&state.conn.lock().unwrap(), limit.unwrap_or(20)).map_err(|e| e.to_string())
+}
+
 // --- app bootstrap -----------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -511,6 +751,7 @@ pub fn run() {
             bridge: Mutex::new(bridge::Bridge::new()),
             objective: Mutex::new(None),
             recent_edits: Mutex::new(VecDeque::new()),
+            failover: Mutex::new(failover::ActivityMonitor::new()),
         })
         .setup(|app| {
             // Auto-init: app-data SQLite, persisted settings, WS server.
@@ -532,6 +773,7 @@ pub fn run() {
             *state.project_root.lock().unwrap() = root.map(PathBuf::from);
             *state.pair_code.lock().unwrap() = code;
             ws::spawn_server(app.handle().clone());
+            spawn_failover_ticker(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -558,6 +800,10 @@ pub fn run() {
             set_objective,
             build_handoff,
             handoff_send,
+            failover_status,
+            failover_reset,
+            failover_deliver,
+            failover_log,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

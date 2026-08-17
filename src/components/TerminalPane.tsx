@@ -102,8 +102,8 @@ export default function TerminalPane() {
           live output of the commands the web AI runs in this project
         </CardDescription>
       </CardHeader>
-      <CardContent className="min-h-0 flex-1 px-3 pb-3">
-        <div className="h-[340px] overflow-hidden rounded-lg border border-border/60 bg-[#0d0d0d]">
+      <CardContent className="flex min-h-0 flex-1 flex-col px-3 pb-3">
+        <div className="min-h-[340px] flex-1 overflow-hidden rounded-lg border border-border/60 bg-[#0d0d0d]">
           <div ref={containerRef} className="h-full w-full p-2" />
         </div>
       </CardContent>

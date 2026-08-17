@@ -18,6 +18,7 @@ import {
 } from "./lib/bridge";
 import ActivityTrace from "./components/ActivityTrace";
 import BridgePanel from "./components/BridgePanel";
+import FailoverPanel from "./components/FailoverPanel";
 import GitPanel from "./components/GitPanel";
 import HandoffPanel from "./components/HandoffPanel";
 import TerminalPane from "./components/TerminalPane";
@@ -330,20 +331,16 @@ export default function App() {
 
         {!restored ? (
           <div className="grid grid-cols-12 gap-4">
+            <Skeleton className="col-span-12 h-80 lg:col-span-7 lg:row-span-2" />
             <Skeleton className="col-span-12 h-40 lg:col-span-5" />
-            <Skeleton className="col-span-12 h-40 lg:col-span-7" />
-            <Skeleton className="col-span-12 h-80 lg:col-span-7" />
-            <Skeleton className="col-span-12 h-80 lg:col-span-5" />
+            <Skeleton className="col-span-12 h-40 lg:col-span-5" />
+            <Skeleton className="col-span-12 h-48 lg:col-span-5" />
+            <Skeleton className="col-span-12 h-48 lg:col-span-7" />
+            <Skeleton className="col-span-12 h-32" />
           </div>
         ) : (
           <div className="grid grid-cols-12 gap-4">
-            <div className="col-span-12 lg:col-span-5">
-              <HandoffPanel />
-            </div>
-            <div className="col-span-12 lg:col-span-7">
-              <BridgePanel code={pairCode} connected={paired} />
-            </div>
-            <div className="col-span-12 lg:col-span-7">
+            <div className="col-span-12 lg:col-span-7 lg:row-span-2 lg:min-h-[640px]">
               {projectRoot ? (
                 <TerminalPane />
               ) : (
@@ -375,7 +372,16 @@ export default function App() {
               )}
             </div>
             <div className="col-span-12 lg:col-span-5">
+              <BridgePanel code={pairCode} connected={paired} />
+            </div>
+            <div className="col-span-12 lg:col-span-5">
+              <FailoverPanel />
+            </div>
+            <div className="col-span-12 lg:col-span-5">
               <ActivityTrace />
+            </div>
+            <div className="col-span-12 lg:col-span-7">
+              <HandoffPanel />
             </div>
             <div className="col-span-12">
               <GitPanel />

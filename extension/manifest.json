@@ -13,6 +13,11 @@
       "matches": ["https://chatgpt.com/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://claude.ai/*", "https://gemini.google.com/*"],
+      "js": ["content-any.js"],
+      "run_at": "document_idle"
     }
   ],
   "action": {

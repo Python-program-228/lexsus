@@ -108,6 +108,12 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                     paired = true;
                     state.ws_connected.store(true, Ordering::SeqCst);
                     *state.ws_tx.lock().unwrap() = Some(ws.clone());
+                    // The web AI is reachable: mark it active for failover.
+                    state
+                        .failover
+                        .lock()
+                        .unwrap()
+                        .record_activity(crate::failover::Agent::Web, "pair");
                     let _ = app.emit("pair://status", true);
                     let mut w = ws.lock().unwrap();
                     let _ = w.send(Message::Text(json!({"type": "pair-ok"}).to_string()));

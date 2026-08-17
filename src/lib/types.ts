@@ -95,5 +95,42 @@ export interface Handoff {
   errors_remaining: number;
   next_step: string | null;
   files: string[];
+  context: string | null;
+  end_reason: string | null;
   generated_at: string;
+}
+
+// --- failover ----------------------------------------------------------------
+
+/** Failover state machines for both directions (local → web, web AI). */
+export interface FailoverStatus {
+  local: string; // inactive | working | stalled | interrupted
+  web: string;
+  local_idle_ms: number;
+  web_idle_ms: number;
+}
+
+export interface FailoverLogEntry {
+  direction: string; // local_to_web | web_to_web | web_to_local
+  trigger: string; // inactivity | ws_drop | manual
+  idle_ms: number;
+  payload: string | null;
+  target: string | null;
+  delivered: boolean;
+  outcome: string | null;
+  ts: string;
+}
+
+export interface FailoverLocalEvent {
+  ok: boolean;
+  delivered?: boolean;
+  idle_ms?: number;
+  handoff?: Handoff;
+  error?: string;
+}
+
+export interface FailoverWebEvent {
+  idle_ms: number;
+  trigger: string;
+  handoff: Handoff | null;
 }

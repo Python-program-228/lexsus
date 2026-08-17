@@ -187,8 +187,9 @@ cmd /c "call ""C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC
 ## 10. How to Extend (Phase 2 starting points)
 
 - **Layer 3 compression:** `compression-service/main.py` (`/compress` 501 stub) becomes real — summarize trace + diff state into the handoff payload.
-- **Pre-handoff context:** read the developer's own Claude Code transcript (`~/.claude/projects/*.jsonl`) on demand so the handoff card is seeded with the real interrupted task — no embedded terminal needed.
-- **More web AIs:** Claude.ai / Gemini — the extension's content script patterns generalize per site.
+- **Pre-handoff context:** ✅ **Done (Phase 3)** — `transcript.rs` reads the developer's own Claude Code transcripts (`~/.claude/projects/*.jsonl`) on demand; the handoff card and auto-failover payload now carry the real task objective + a context snippet + end reason, no embedded terminal needed.
+- **More web AIs:** ✅ **Done (Phase 3)** — the extension now targets Claude.ai + Gemini (`content-any.js`) in addition to chatgpt.com, so a dead ChatGPT session can fail over to them with the same handoff + tool-line prompt.
+- **Automatic failover:** ✅ **Done (Phase 3)** — `failover.rs` detects a stopped local agent (inactivity, vetoable by any file change) and a dead web AI (WS drop / silence), auto-builds the enriched handoff and auto-delivers it (`auto:true` → the extension inserts + submits the prompt). Telemetry in `failover_log`.
 - **Native messaging:** swap the WS transport for Chrome native messaging if a signed/loopback-secured channel is ever needed.
 
 ---

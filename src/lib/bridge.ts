@@ -4,6 +4,8 @@ import type {
   BranchInfo,
   BridgeTool,
   CommitInfo,
+  FailoverLogEntry,
+  FailoverStatus,
   FileDiff,
   GitFileStatus,
   Handoff,
@@ -108,4 +110,24 @@ export function buildHandoff(): Promise<Handoff> {
 
 export function handoffSend(): Promise<Handoff> {
   return invoke("handoff_send");
+}
+
+// --- automatic failover ------------------------------------------------------
+
+export function failoverStatus(): Promise<FailoverStatus> {
+  return invoke("failover_status");
+}
+
+export function failoverReset(agent: "local" | "web"): Promise<void> {
+  return invoke("failover_reset", { agent });
+}
+
+export function failoverDeliver(
+  target: "chatgpt" | "claudeai" | "gemini" | "local",
+): Promise<Handoff> {
+  return invoke("failover_deliver", { target });
+}
+
+export function failoverLog(limit?: number): Promise<FailoverLogEntry[]> {
+  return invoke("failover_log", { limit });
 }

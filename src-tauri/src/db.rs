@@ -117,6 +117,25 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         );
         "#,
     ),
+    (
+        "0004_failover",
+        r#"
+        CREATE TABLE IF NOT EXISTS failover_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            direction   TEXT NOT NULL,      -- local_to_web | web_to_web | web_to_local
+            trigger     TEXT NOT NULL,      -- inactivity | ws_drop | manual
+            idle_ms     INTEGER NOT NULL,
+            payload     TEXT,
+            target      TEXT,               -- chatgpt | claudeai | gemini | local
+            delivered   INTEGER NOT NULL DEFAULT 0,
+            outcome     TEXT,
+            ts          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_failover_log_ts
+            ON failover_log(ts);
+        "#,
+    ),
 ];
 
 /// Open (or create) the database and apply any pending migrations.
@@ -288,4 +307,65 @@ pub fn trace_stats(conn: &Connection) -> rusqlite::Result<TraceStats> {
         steps,
         last_step,
     })
+}
+
+/// One automatic-failover record (serde: mirrors frontend type).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FailoverEntry {
+    pub direction: String,
+    pub trigger: String,
+    pub idle_ms: i64,
+    pub payload: Option<String>,
+    pub target: Option<String>,
+    pub delivered: bool,
+    pub outcome: Option<String>,
+    pub ts: String,
+}
+
+/// A failover record to insert (the DB fills in id/ts).
+pub struct NewFailover<'a> {
+    pub direction: &'a str,
+    pub trigger: &'a str,
+    pub idle_ms: i64,
+    pub payload: Option<&'a str>,
+    pub target: Option<&'a str>,
+    pub delivered: bool,
+    pub outcome: Option<&'a str>,
+}
+
+pub fn record_failover(conn: &Connection, entry: &NewFailover<'_>) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO failover_log (direction, trigger, idle_ms, payload, target, delivered, outcome)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            entry.direction,
+            entry.trigger,
+            entry.idle_ms,
+            entry.payload,
+            entry.target,
+            entry.delivered as i64,
+            entry.outcome,
+        ),
+    )?;
+    Ok(())
+}
+
+pub fn failover_log(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<FailoverEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT direction, trigger, idle_ms, payload, target, delivered, outcome, ts
+         FROM failover_log ORDER BY id DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit as i64], |row| {
+        Ok(FailoverEntry {
+            direction: row.get(0)?,
+            trigger: row.get(1)?,
+            idle_ms: row.get(2)?,
+            payload: row.get(3)?,
+            target: row.get(4)?,
+            delivered: row.get::<_, i64>(5)? != 0,
+            outcome: row.get(6)?,
+            ts: row.get(7)?,
+        })
+    })?;
+    rows.collect()
 }
