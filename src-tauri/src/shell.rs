@@ -1,8 +1,7 @@
-//! Shell abstraction: runtime detection and `CommandBuilder` construction.
-//!
-//! The app never hard-codes a shell. Interactive sessions and one-shot
-//! commands are built from a detected [`Shell`] so behavior is predictable
-//! on Windows (PowerShell -> Cmd) and Unix (Sh/Bash/Zsh).
+//! Shell abstraction: runtime detection and one-shot `CommandBuilder`
+//! construction. The app never hard-codes a shell; commands are built from
+//! a detected [`Shell`] so behavior is predictable on Windows (PowerShell
+//! -> Cmd) and Unix (Sh/Bash/Zsh).
 
 use portable_pty::CommandBuilder;
 #[cfg(not(windows))]
@@ -51,39 +50,8 @@ impl Shell {
         }
     }
 
-    /// Human-readable name, used in events and the status bar.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Shell::Sh => "sh",
-            Shell::Bash => "bash",
-            Shell::Zsh => "zsh",
-            Shell::Cmd => "cmd",
-            Shell::PowerShell => "powershell",
-        }
-    }
-
-    /// A bare interactive session command (terminal pane). The process must
-    /// stay alive until the user (or the app) exits it.
-    pub fn interactive_command(&self) -> CommandBuilder {
-        let mut builder = match self {
-            Shell::PowerShell => CommandBuilder::new("powershell.exe"),
-            Shell::Cmd => CommandBuilder::new(comspec_or("cmd.exe")),
-            Shell::Sh => CommandBuilder::new("sh"),
-            Shell::Bash => CommandBuilder::new("bash"),
-            Shell::Zsh => CommandBuilder::new("zsh"),
-        };
-        match self {
-            Shell::PowerShell => builder.args(["-NoLogo", "-NoExit"]),
-            Shell::Cmd => builder.args(["/K"]),
-            Shell::Bash => builder.args(["--login"]),
-            _ => {}
-        }
-        builder
-    }
-
     /// A one-shot command invocation: `<shell> -c/-Command/<cmd>`.
-    /// Never run inside an interactive session — one-shots are always
-    /// temporary children (see `pty::run_command`).
+    /// One-shots are always temporary children (see `pty::run_command_stream`).
     pub fn run_command(&self, cmd: &str) -> CommandBuilder {
         let mut builder = match self {
             Shell::PowerShell => CommandBuilder::new("powershell.exe"),
@@ -149,13 +117,6 @@ mod tests {
         );
         #[cfg(not(windows))]
         assert!(matches!(shell, Shell::Sh | Shell::Bash | Shell::Zsh));
-    }
-
-    #[test]
-    fn names_are_stable() {
-        assert_eq!(Shell::Sh.name(), "sh");
-        assert_eq!(Shell::Cmd.name(), "cmd");
-        assert_eq!(Shell::PowerShell.name(), "powershell");
     }
 
     #[test]

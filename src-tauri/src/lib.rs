@@ -4,10 +4,6 @@ pub mod db;
 
 pub mod git;
 
-pub mod observe;
-
-pub mod parser;
-
 pub mod pty;
 
 pub mod shell;
@@ -18,72 +14,45 @@ pub mod ws;
 
 use std::collections::VecDeque;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use std::sync::mpsc::RecvTimeoutError;
+use std::sync::atomic::AtomicBool;
 
 use std::sync::{Arc, Mutex};
 
 use std::thread;
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tauri::{Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
-/// App-managed shared state: the SQLite connection, the watched project/// root, the single active interactive PTY session, the trace parser,/// the extension WebSocket, and the approval queue.
+/// App-managed shared state: the SQLite connection, the watched project
+/// root, the extension WebSocket, and the approval queue.
 pub(crate) struct AppState {
     pub(crate) conn: Mutex<rusqlite::Connection>,
     pub(crate) project_root: Mutex<Option<PathBuf>>,
-    pub(crate) session: Mutex<Option<pty::SessionPty>>,
-    pub(crate) parser: Mutex<parser::Parser>,
     pub(crate) pair_code: Mutex<String>,
     pub(crate) ws_connected: AtomicBool,
     pub(crate) ws_tx: Mutex<Option<Arc<Mutex<tungstenite::WebSocket<std::net::TcpStream>>>>>,
     pub(crate) bridge: Mutex<bridge::Bridge>,
-    pub(crate) session_id: Mutex<Option<i64>>,
     pub(crate) objective: Mutex<Option<String>>,
     /// Recent "editing X" steps, for watcher cross-correlation.
     pub(crate) recent_edits: Mutex<VecDeque<(String, Instant)>>,
-    /// Active external-session observer, if one is mirroring.
-    pub(crate) observe: Mutex<Option<observe::ObserveHandle>>,
-    /// Trace session id used by the observer's recorded steps.
-    pub(crate) observe_id: Mutex<Option<i64>>,
 }
 
-/// The single active interactive session may only live inside the/// configured project root — groundwork for M2's path-containment model.
-fn path_inside(candidate: &Path, root: &Path) -> bool {
-    let cand = candidate
-        .canonicalize()
-        .unwrap_or_else(|_| candidate.to_path_buf());
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    cand.starts_with(&root)
-}
-
-/// Event payloads streamed to the frontend over Tauri events.
+/// A trace step emitted to the UI (mirrors `TraceStep` in the frontend).
 #[derive(Clone, serde::Serialize)]
-struct PtySpawned {
-    shell: String,
-    cwd: String,
+struct TraceStepEvent {
+    kind: String,
+    file: Option<String>,
+    command: Option<String>,
+    detail: Option<String>,
+    confirmed: bool,
+    agent: String,
+    ts: u64,
 }
 
-#[derive(Clone, serde::Serialize)]
-struct PtyOutput {
-    data: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct PtyExit {
-    code: Option<i32>,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct PtyOverflow {
-    dropped: u64,
-}
-
-// --- commands ---------------------------------------------------------------/// Initialize / open the local database and return the connection.
+// --- commands ----------------------------------------------------------------
 
 #[tauri::command]
 fn init_database(state: State<'_, AppState>, db_path: String) -> Result<Vec<String>, String> {
@@ -120,118 +89,53 @@ fn get_project_root(state: State<'_, AppState>) -> Result<Option<String>, String
         .map(|p| p.display().to_string()))
 }
 
-/// Get the current git status of the project (working tree).
+// --- git panel ---------------------------------------------------------------
+
 #[tauri::command]
 fn git_status(state: State<'_, AppState>) -> Result<Vec<git::GitFileStatus>, String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let repo = git::open_repo(&root).map_err(|e| e.to_string())?;
-    git::status(&repo).map_err(|e| e.to_string())
+    with_repo(state, git::status)
 }
 
-/// Get the current branch of the project.
 #[tauri::command]
 fn git_branch(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let repo = git::open_repo(&root).map_err(|e| e.to_string())?;
-    Ok(git::current_branch(&repo))
+    with_repo(state, |repo| Ok(git::current_branch(repo)))
 }
 
-/// Stage all changes and commit them with the given message.
 #[tauri::command]
 fn git_commit(state: State<'_, AppState>, message: String) -> Result<String, String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let repo = git::open_repo(&root).map_err(|e| e.to_string())?;
-    let oid = git::commit(&repo, &message).map_err(|e| e.to_string())?;
-    Ok(oid.to_string())
+    with_repo(state, |repo| {
+        git::commit(repo, &message).map(|oid| oid.to_string())
+    })
 }
-
-// --- M1.6 git panel backend -------------------------------------------------
 
 #[tauri::command]
 fn git_diff(state: State<'_, AppState>) -> Result<Vec<git::FileDiff>, String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let repo = git::open_repo(&root).map_err(|e| e.to_string())?;
-    git::diff_workdir(&repo).map_err(|e| e.to_string())
+    with_repo(state, git::diff_workdir)
 }
 
 #[tauri::command]
 fn git_stage(state: State<'_, AppState>, path: String) -> Result<(), String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let repo = git::open_repo(&root).map_err(|e| e.to_string())?;
-    git::stage(&repo, &path).map_err(|e| e.to_string())
+    with_repo(state, |repo| git::stage(repo, &path))
 }
 
 #[tauri::command]
 fn git_unstage(state: State<'_, AppState>, path: String) -> Result<(), String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let repo = git::open_repo(&root).map_err(|e| e.to_string())?;
-    git::unstage(&repo, &path).map_err(|e| e.to_string())
+    with_repo(state, |repo| git::unstage(repo, &path))
 }
 
 #[tauri::command]
 fn git_stage_all(state: State<'_, AppState>) -> Result<(), String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let repo = git::open_repo(&root).map_err(|e| e.to_string())?;
-    git::stage_all(&repo).map_err(|e| e.to_string())
+    with_repo(state, git::stage_all)
 }
 
 #[tauri::command]
 fn git_branches(state: State<'_, AppState>) -> Result<Vec<git::BranchInfo>, String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let repo = git::open_repo(&root).map_err(|e| e.to_string())?;
-    git::branches(&repo).map_err(|e| e.to_string())
+    with_repo(state, git::branches)
 }
 
 #[tauri::command]
 fn git_checkout(state: State<'_, AppState>, name: String) -> Result<(), String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let repo = git::open_repo(&root).map_err(|e| e.to_string())?;
-    git::checkout(&repo, &name).map_err(|e| e.to_string())
+    with_repo(state, |repo| git::checkout(repo, &name))
 }
 
 #[tauri::command]
@@ -239,18 +143,18 @@ fn git_log(
     state: State<'_, AppState>,
     limit: Option<usize>,
 ) -> Result<Vec<git::CommitInfo>, String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let repo = git::open_repo(&root).map_err(|e| e.to_string())?;
-    git::log(&repo, limit.unwrap_or(50)).map_err(|e| e.to_string())
+    with_repo(state, |repo| git::log(repo, limit.unwrap_or(50)))
 }
 
 #[tauri::command]
 fn git_commit_diff(state: State<'_, AppState>, oid: String) -> Result<String, String> {
+    with_repo(state, |repo| git::commit_diff(repo, &oid))
+}
+
+fn with_repo<T>(
+    state: State<'_, AppState>,
+    f: impl FnOnce(&git2::Repository) -> Result<T, git2::Error>,
+) -> Result<T, String> {
     let root = state
         .project_root
         .lock()
@@ -258,211 +162,10 @@ fn git_commit_diff(state: State<'_, AppState>, oid: String) -> Result<String, St
         .clone()
         .ok_or_else(|| "project root not set".to_string())?;
     let repo = git::open_repo(&root).map_err(|e| e.to_string())?;
-    git::commit_diff(&repo, &oid).map_err(|e| e.to_string())
+    f(&repo).map_err(|e| e.to_string())
 }
 
-// --- terminal ----------------------------------------------------------------/// Run a shell command in the project directory and return its output./// One-shot only — never routed through the interactive session.
-
-#[tauri::command]
-fn run_command(
-    state: State<'_, AppState>,
-    command: String,
-    timeout_ms: Option<u64>,
-    max_output_bytes: Option<usize>,
-) -> Result<pty::CommandOutput, String> {
-    let cwd = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(60_000));
-    let max_output = max_output_bytes.unwrap_or(1_048_576);
-    pty::run_command(&command, &cwd, timeout, max_output).map_err(|e| e.to_string())
-}
-
-/// Spawn the single interactive PTY session (shell). Any prior session is/// killed and replaced — sessions never accumulate.
-#[tauri::command]
-async fn pty_spawn(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-    cwd: String,
-    rows: u16,
-    cols: u16,
-) -> Result<PtySpawned, String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let cwd = validate_cwd(&cwd, &root)?;
-    let shell = shell::Shell::detect();
-    let session = pty::spawn_session(shell, &cwd, rows, cols).map_err(|e| e.to_string())?;
-    let name = shell.name().to_string();
-    install_session(&state, &app, session, &name);
-    let spawned = PtySpawned {
-        shell: name,
-        cwd: cwd.display().to_string(),
-    };
-    let _ = app.emit("pty://spawned", spawned.clone());
-    Ok(spawned)
-}
-
-/// Spawn the interactive session running Claude Code (M1.3).
-#[tauri::command]
-async fn claude_spawn(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-    cwd: String,
-    rows: u16,
-    cols: u16,
-) -> Result<PtySpawned, String> {
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let cwd = validate_cwd(&cwd, &root)?;
-
-    // Windows: `claude` is an npm shim (claude.cmd) — spawn via cmd /c.
-    let (program, args): (&str, Vec<&str>) = if cfg!(windows) {
-        ("cmd", vec!["/c", "claude"])
-    } else {
-        ("claude", vec![])
-    };
-    let shell = shell::Shell::detect();
-    let session =
-        pty::spawn_program(program, &args, &cwd, rows, cols, shell).map_err(|e| e.to_string())?;
-    install_session(&state, &app, session, "claude");
-    let spawned = PtySpawned {
-        shell: "claude".to_string(),
-        cwd: cwd.display().to_string(),
-    };
-    let _ = app.emit("pty://spawned", spawned.clone());
-    Ok(spawned)
-}
-
-fn validate_cwd(cwd: &str, root: &Path) -> Result<PathBuf, String> {
-    let cwd = PathBuf::from(cwd);
-    if !cwd.is_dir() {
-        return Err(format!("not a directory: {}", cwd.display()));
-    }
-    if !path_inside(&cwd, root) {
-        return Err(format!("cwd outside project root: {}", cwd.display()));
-    }
-    Ok(cwd)
-}
-
-/// Replace any prior session, start the emit loop (pty://* + trace://*/// + persistence), and open a session row.
-fn install_session(
-    state: &State<'_, AppState>,
-    app: &tauri::AppHandle,
-    session: pty::SessionPty,
-    label: &str,
-) {
-    if let Some(mut old) = state.session.lock().unwrap().take() {
-        let _ = old.kill();
-    }
-    *state.session.lock().unwrap() = Some(session);
-    let session_id = db::begin_session(&state.conn.lock().unwrap(), label).ok();
-    *state.session_id.lock().unwrap() = session_id;
-    let app2 = app.clone();
-    thread::spawn(move || {
-        let state = app2.state::<AppState>();
-        loop {
-            let mut guard = state.session.lock().unwrap();
-            let Some(session) = guard.as_mut() else { break };
-
-            match session.recv_output(Duration::from_millis(25)) {
-                Ok(pty::PtyChunk::Data(data)) => {
-                    let text = String::from_utf8_lossy(&data).into_owned();
-                    let _ = app2.emit("pty://output", PtyOutput { data: text.clone() });
-
-                    // Activity trace: parse the same stream the terminal renders.
-                    let steps = state.parser.lock().unwrap().feed(&text);
-                    for step in steps {
-                        let sid = *state.session_id.lock().unwrap();
-                        let _ = db::record_trace_step(
-                            &state.conn.lock().unwrap(),
-                            sid,
-                            &step.kind,
-                            step.file.as_deref(),
-                            step.command.as_deref(),
-                            step.detail.as_deref(),
-                            false,
-                        );
-                        if step.kind == "editing" {
-                            let mut ring = state.recent_edits.lock().unwrap();
-                            ring.push_back((step.file.clone().unwrap_or_default(), Instant::now()));
-                            while ring.len() > 64 {
-                                ring.pop_front();
-                            }
-                        }
-                        let _ = app2.emit("trace://step", step);
-                    }
-                }
-                Ok(pty::PtyChunk::Dropped(dropped)) => {
-                    let _ = app2.emit("pty://overflow", PtyOverflow { dropped });
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    if let Some(code) = session.poll_exit() {
-                        let sid = state.session_id.lock().unwrap().take();
-                        let _ = db::end_session(
-                            &state.conn.lock().unwrap(),
-                            sid.unwrap_or(-1),
-                            Some(code),
-                        );
-                        let _ = app2.emit("pty://exit", PtyExit { code: Some(code) });
-                        *guard = None;
-                        break;
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    let code = session.poll_exit();
-                    let sid = state.session_id.lock().unwrap().take();
-                    let _ = db::end_session(&state.conn.lock().unwrap(), sid.unwrap_or(-1), code);
-                    let _ = app2.emit("pty://exit", PtyExit { code });
-                    *guard = None;
-                    break;
-                }
-            }
-        }
-    });
-}
-
-/// Write raw bytes to the interactive session's stdin.
-#[tauri::command]
-fn pty_write(state: State<'_, AppState>, data: String) -> Result<(), String> {
-    let mut guard = state.session.lock().unwrap();
-    let session = guard
-        .as_mut()
-        .ok_or_else(|| "no active session".to_string())?;
-    session.write(data.as_bytes()).map_err(|e| e.to_string())
-}
-
-/// Resize the interactive session's PTY.
-#[tauri::command]
-fn pty_resize(state: State<'_, AppState>, rows: u16, cols: u16) -> Result<(), String> {
-    let mut guard = state.session.lock().unwrap();
-    let session = guard
-        .as_mut()
-        .ok_or_else(|| "no active session".to_string())?;
-    session.resize(rows, cols).map_err(|e| e.to_string())
-}
-
-/// Kill the interactive session. The emit loop clears it on exit.
-#[tauri::command]
-async fn pty_kill(state: State<'_, AppState>) -> Result<(), String> {
-    let mut guard = state.session.lock().unwrap();
-    let session = guard
-        .as_mut()
-        .ok_or_else(|| "no active session".to_string())?;
-    session.kill().map_err(|e| e.to_string())
-}
-
-// --- watcher (M1.4 grounding + M1.5 persistence) -----------------------------/// Start watching the project folder; events stream on fs://event and/// cross-correlate with the trace (trace://confirm).
+// --- watcher (trace grounding) -----------------------------------------------
 
 #[tauri::command]
 fn start_watch(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
@@ -494,11 +197,10 @@ fn start_watch(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), 
                 .unwrap_or(raw);
             let _ = app.emit(
                 "fs://event",
-                serde_json::json!({"path": rel, "kind": ev.kind}
-                ),
+                serde_json::json!({"path": rel, "kind": ev.kind}),
             );
 
-            // Grounding: did the agent recently claim to edit this file?
+            // Grounding: did the web AI recently claim to edit this file?
             let confirmed = {
                 let mut ring = state.recent_edits.lock().unwrap();
                 let pos = ring
@@ -513,144 +215,26 @@ fn start_watch(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), 
             };
             if confirmed {
                 let _ = db::confirm_trace_steps(&state.conn.lock().unwrap(), &rel);
-                let _ = app.emit(
-                    "trace://confirm",
-                    serde_json::json!({"path": rel}
-                    ),
-                );
+                let _ = app.emit("trace://confirm", serde_json::json!({"path": rel}));
             }
         }
     });
     Ok(())
 }
 
-// --- observe: mirror external agent sessions (M3) ----------------------------/// Look for a live external coding-agent session (opencode, later Claude Code)/// bound to the configured project root. Async: reading the opencode store/// must never block the UI thread.
-#[tauri::command]
-async fn observe_detect(
-    state: State<'_, AppState>,
-) -> Result<Option<observe::ExternalSession>, String> {
-    let root = match state.project_root.lock().unwrap().clone() {
-        Some(r) => r,
-        None => return Ok(None),
-    };
-    Ok(observe::backends()
-        .into_iter()
-        .find_map(|b| b.detect(&root)))
-}
+// --- bridge: web-AI tools + approvals ----------------------------------------
 
-/// Start mirroring the detected external session; idempotent.
-#[tauri::command]
-async fn observe_start(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-) -> Result<observe::ExternalSession, String> {
-    if let Some(h) = state.observe.lock().unwrap().as_ref() {
-        return Ok(h.session.clone());
+/// Stream a running command into the UI terminal pane.
+pub(crate) fn command_stream(app: &AppHandle) -> impl FnMut(bridge::CommandEvent) + '_ {
+    let app = app.clone();
+    move |event| {
+        let _ = app.emit("terminal://run", event);
     }
-    let root = state
-        .project_root
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "project root not set".to_string())?;
-    let (backend, session) = observe::backends()
-        .into_iter()
-        .filter_map(|b| b.detect(&root).map(|s| (b, s)))
-        .next()
-        .ok_or_else(|| "no external opencode session detected".to_string())?;
-
-    let (tx, rx) = std::sync::mpsc::channel::<observe::ObserveOut>();
-    let stop = Arc::new(AtomicBool::new(false));
-    let session2 = session.clone();
-    let stop2 = stop.clone();
-    thread::spawn(move || backend.tail(&session2, tx, stop2));
-    let sid = db::begin_session(&state.conn.lock().unwrap(), "opencode-external").ok();
-    *state.observe_id.lock().unwrap() = sid;
-
-    let app2 = app.clone();
-    let st2 = stop.clone();
-    thread::spawn(move || {
-        let state = app2.state::<AppState>();
-        let mut last_activity = Instant::now();
-        loop {
-            match rx.recv_timeout(Duration::from_millis(400)) {
-                Ok(out) => {
-                    let _ = app2.emit("observe://line", &out);
-                    if !out.parse.is_empty() {
-                        let steps = state.parser.lock().unwrap().feed(&out.parse);
-                        let osid = *state.observe_id.lock().unwrap();
-                        for step in steps {
-                            let _ = db::record_trace_step(
-                                &state.conn.lock().unwrap(),
-                                osid,
-                                &step.kind,
-                                step.file.as_deref(),
-                                step.command.as_deref(),
-                                step.detail.as_deref(),
-                                false,
-                            );
-                            if step.kind == "editing" {
-                                let mut ring = state.recent_edits.lock().unwrap();
-                                ring.push_back((
-                                    step.file.clone().unwrap_or_default(),
-                                    Instant::now(),
-                                ));
-                                while ring.len() > 64 {
-                                    ring.pop_front();
-                                }
-                            }
-                            let _ = app2.emit("trace://step", step);
-                        }
-                    }
-                    last_activity = Instant::now();
-                }
-                // No new lines yet — keep waiting; this is not the end.
-                Err(RecvTimeoutError::Timeout) => {}
-                // The tail thread is gone — the mirror is over.
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-            if st2.load(Ordering::Relaxed) {
-                break;
-            }
-        }
-        let osid = state.observe_id.lock().unwrap().take();
-        let _ = db::end_session(&state.conn.lock().unwrap(), osid.unwrap_or(-1), None);
-        let _ = app2.emit(
-            "observe://ended",
-            serde_json::json!({"idle_ms": last_activity.elapsed().as_millis()}),
-        );
-    });
-
-    let handle = observe::ObserveHandle {
-        stop,
-        session: session.clone(),
-        started: Instant::now(),
-    };
-    *state.observe.lock().unwrap() = Some(handle);
-    let _ = app.emit(
-        "observe://status",
-        observe::ObserveStatusWrapper::observing(&session),
-    );
-    Ok(session)
 }
 
-/// Stop mirroring the external session.
-#[tauri::command]
-async fn observe_stop(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(h) = state.observe.lock().unwrap().take() {
-        h.stop.store(true, Ordering::Relaxed);
-        let _ = app.emit("observe://status", observe::ObserveStatusWrapper::idle());
-    }
-    Ok(())
-}
-
-// --- bridge: web-AI tools + approvals (M2) -----------------------------------/// Route a tool call through the approval policy. Shared by the/// `bridge_tool` command (desktop) and the WebSocket handler (web).
-
-pub(crate) fn tool_call(
-    app: &tauri::AppHandle,
-    tool: bridge::Tool,
-    source: &str,
-) -> bridge::ToolResult {
+/// Route a tool call through the approval policy. Shared by the
+/// `bridge_tool` command (desktop) and the WebSocket handler (web).
+pub(crate) fn tool_call(app: &AppHandle, tool: bridge::Tool, source: &str) -> bridge::ToolResult {
     let state = app.state::<AppState>();
     let root = state.project_root.lock().unwrap().clone();
     let (result, approval_id) =
@@ -659,8 +243,8 @@ pub(crate) fn tool_call(
             .lock()
             .unwrap()
             .submit(tool.clone(), source, root.as_deref());
-    let Some(id) = approval_id else {
-        // Auto-approved: audit immediately.
+    let Some(_id) = approval_id else {
+        // Auto-approved: audit and trace immediately.
         let _ = db::record_audit(
             &state.conn.lock().unwrap(),
             source,
@@ -670,13 +254,15 @@ pub(crate) fn tool_call(
             "auto",
             result.ok,
         );
+        if result.ok {
+            record_tool_trace(&state, app, &tool);
+        }
         return result;
     };
     let summary = bridge::describe(&tool);
     let _ = app.emit(
         "bridge://approval-requested",
-        serde_json::json!({"id": id, "summary": summary, "source": source}
-        ),
+        serde_json::json!({"id": _id, "summary": summary, "source": source}),
     );
     if source == "web" {
         // WS caller: wait for the user's decision (up to 5 minutes).
@@ -688,7 +274,7 @@ pub(crate) fn tool_call(
             .channels
             .lock()
             .unwrap()
-            .insert(id, tx);
+            .insert(_id, tx);
 
         match rx.recv_timeout(Duration::from_secs(300)) {
             Ok(r) => r,
@@ -699,7 +285,7 @@ pub(crate) fn tool_call(
     }
 }
 
-/// Desktop tool sandbox / extension relay entry (M2).
+/// Desktop tool sandbox / extension relay entry.
 #[tauri::command]
 fn bridge_tool(
     state: State<'_, AppState>,
@@ -719,11 +305,12 @@ fn bridge_approve(
     allow: bool,
 ) -> Result<bridge::ToolResult, String> {
     let root = state.project_root.lock().unwrap().clone();
+    let mut stream = command_stream(&app);
     let (result, req) = state
         .bridge
         .lock()
         .unwrap()
-        .resolve(id, allow, root.as_deref())
+        .resolve(id, allow, root.as_deref(), Some(&mut stream))
         .ok_or_else(|| "no such approval request".to_string())?;
     let _ = db::record_audit(
         &state.conn.lock().unwrap(),
@@ -734,10 +321,12 @@ fn bridge_approve(
         if allow { "user" } else { "denied" },
         result.ok,
     );
+    if allow && result.ok {
+        record_tool_trace(&state, &app, &req.tool);
+    }
     let _ = app.emit(
         "bridge://approval-resolved",
-        serde_json::json!({"id": id, "allowed": allow, "result": result}
-        ),
+        serde_json::json!({"id": id, "allowed": allow, "result": result}),
     );
     Ok(result)
 }
@@ -751,8 +340,61 @@ fn bridge_audit(
     db::last_audit(&state.conn.lock().unwrap(), limit.unwrap_or(30)).map_err(|e| e.to_string())
 }
 
-// --- pairing + handoff (M2) --------------------------------------------------/// Get (or generate) the 6-digit pairing code for the extension.
+/// Record an executed tool call as a trace step, so the live activity
+/// trace and handoff reflect real web-AI work.
+pub(crate) fn record_tool_trace(state: &AppState, app: &AppHandle, tool: &bridge::Tool) {
+    let (kind, file, command) = match tool {
+        bridge::Tool::ReadFile { path } => (Some("reading"), Some(path.clone()), None),
+        bridge::Tool::WriteFile { path, .. } => (Some("editing"), Some(path.clone()), None),
+        bridge::Tool::RunCommand { command } => (Some("running"), None, Some(command.clone())),
+        bridge::Tool::ListDirectory { path } => (Some("reading"), Some(path.clone()), None),
+        bridge::Tool::GitStatus => (None, None, None),
+    };
+    let Some(kind) = kind else {
+        return;
+    };
+    let _ = db::record_trace_step(
+        &state.conn.lock().unwrap(),
+        None,
+        kind,
+        file.as_deref(),
+        command.as_deref(),
+        None,
+        false,
+    );
+    let _ = app.emit(
+        "trace://step",
+        TraceStepEvent {
+            kind: kind.to_string(),
+            file: file.clone(),
+            command: command.clone(),
+            detail: None,
+            confirmed: false,
+            agent: "web".to_string(),
+            ts: now_millis(),
+        },
+    );
+    if kind == "editing" {
+        if let Some(file) = file {
+            let mut ring = state.recent_edits.lock().unwrap();
+            ring.push_back((file, Instant::now()));
+            while ring.len() > 64 {
+                ring.pop_front();
+            }
+        }
+    }
+}
 
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+// --- pairing + handoff -------------------------------------------------------
+
+/// Get (or generate) the 6-digit pairing code for the extension.
 #[tauri::command]
 fn pair_get_code(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<String, String> {
     let mut code = state.pair_code.lock().unwrap();
@@ -767,7 +409,7 @@ fn pair_get_code(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<St
 /// Is an extension currently paired?
 #[tauri::command]
 fn pair_status(state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.ws_connected.load(Ordering::SeqCst))
+    Ok(state.ws_connected.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 /// Set the handoff objective (editable in the handoff panel).
@@ -789,7 +431,8 @@ pub struct Handoff {
     pub generated_at: String,
 }
 
-/// Build the handoff card from persisted trace state (shared by the/// desktop command and the extension's handoff-request).
+/// Build the handoff card from persisted trace state (shared by the
+/// desktop command and the extension's handoff-request).
 pub(crate) fn build_handoff_impl(state: &AppState) -> Result<Handoff, String> {
     let conn = state.conn.lock().unwrap();
     let stats = db::trace_stats(&conn).map_err(|e| e.to_string())?;
@@ -823,10 +466,7 @@ pub(crate) fn build_handoff_impl(state: &AppState) -> Result<Handoff, String> {
             base.min(70)
         }
     };
-    let generated_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_string());
+    let generated_at = now_millis().to_string();
     Ok(Handoff {
         objective,
         progress_percent,
@@ -843,7 +483,8 @@ fn build_handoff(state: State<'_, AppState>) -> Result<Handoff, String> {
     build_handoff_impl(&state)
 }
 
-/// Send the handoff to the paired extension (returns the payload; false/// when no extension is paired — the frontend falls back to copy).
+/// Send the handoff to the paired extension (returns the payload; false
+/// when no extension is paired — the frontend falls back to copy).
 #[tauri::command]
 fn handoff_send(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<Handoff, String> {
     let handoff = build_handoff(state)?;
@@ -854,7 +495,7 @@ fn handoff_send(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<Han
     Ok(handoff)
 }
 
-// --- app bootstrap ------------------------------------------------------------
+// --- app bootstrap -----------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -864,17 +505,12 @@ pub fn run() {
         .manage(AppState {
             conn: Mutex::new(rusqlite::Connection::open_in_memory().expect("in-memory db")),
             project_root: Mutex::new(None),
-            session: Mutex::new(None),
-            parser: Mutex::new(parser::Parser::new()),
             pair_code: Mutex::new(String::new()),
             ws_connected: AtomicBool::new(false),
             ws_tx: Mutex::new(None),
             bridge: Mutex::new(bridge::Bridge::new()),
-            session_id: Mutex::new(None),
             objective: Mutex::new(None),
             recent_edits: Mutex::new(VecDeque::new()),
-            observe: Mutex::new(None),
-            observe_id: Mutex::new(None),
         })
         .setup(|app| {
             // Auto-init: app-data SQLite, persisted settings, WS server.
@@ -913,16 +549,7 @@ pub fn run() {
             git_checkout,
             git_log,
             git_commit_diff,
-            run_command,
             start_watch,
-            observe_detect,
-            observe_start,
-            observe_stop,
-            pty_spawn,
-            pty_write,
-            pty_resize,
-            pty_kill,
-            claude_spawn,
             bridge_tool,
             bridge_approve,
             bridge_audit,
@@ -934,12 +561,5 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
-    app.run(|handle, event| {
-        if let tauri::RunEvent::ExitRequested { .. } = event {
-            // Never leave the PTY child running after the app closes.
-            if let Some(mut session) = handle.state::<AppState>().session.lock().unwrap().take() {
-                let _ = session.kill();
-            }
-        }
-    });
+    app.run(|_handle, _event| {});
 }

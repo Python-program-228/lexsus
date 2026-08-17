@@ -7,49 +7,31 @@ export interface GitFileStatus {
   deletions: number;
 }
 
-export interface CommandOutput {
-  command: string;
-  exit_code: number | null;
-  output: string;
-  timed_out: boolean;
-  truncated: boolean;
-}
-
-export interface PtySpawned {
-  shell: string;
-  cwd: string;
-}
-
-export interface PtyOutput {
-  data: string;
-}
-
-export interface PtyExit {
-  code: number | null;
-}
-
-export interface PtyOverflow {
-  dropped: number;
-}
-
 export interface FsEvent {
   path: string;
   kind: string;
 }
 
-// --- M1.4 activity trace -----------------------------------------------------
+// --- activity trace ----------------------------------------------------------
 
 export interface TraceStep {
-  kind: string; // reading | editing | running | test | error
+  kind: string; // reading | editing | running | test | error | fs
   file: string | null;
   command: string | null;
   detail: string | null;
   confirmed: boolean;
-  agent: string; // claude | web
+  agent: string; // web | watcher
   ts: number;
 }
 
-// --- M1.6 git panel ----------------------------------------------------------
+// --- terminal ----------------------------------------------------------------
+
+export type TerminalRunEvent =
+  | { kind: "start"; command: string }
+  | { kind: "output"; data: string }
+  | { kind: "exit"; code: number | null; timed_out: boolean; truncated: boolean };
+
+// --- git panel ---------------------------------------------------------------
 
 export interface FileDiff {
   path: string;
@@ -71,7 +53,7 @@ export interface CommitInfo {
   timestamp: number;
 }
 
-// --- M2 bridge ---------------------------------------------------------------
+// --- bridge ------------------------------------------------------------------
 
 export interface BridgeTool {
   ReadFile?: { path: string };
@@ -104,7 +86,7 @@ export interface AuditEntry {
   ts: string;
 }
 
-// --- M2 handoff --------------------------------------------------------------
+// --- handoff -----------------------------------------------------------------
 
 export interface Handoff {
   objective: string;
@@ -114,25 +96,4 @@ export interface Handoff {
   next_step: string | null;
   files: string[];
   generated_at: string;
-}
-
-// --- M3 external session mirror ----------------------------------------------
-
-export interface ExternalSession {
-  backend: string;
-  session_id: string;
-  title: string;
-  cwd: string;
-  last_ts: number;
-  project_dir: string;
-}
-
-export interface ObserveLine {
-  kind: string; // text | thinking | tool | error | step
-  text: string;
-}
-
-export interface ObserveStatus {
-  observing: boolean;
-  session: ExternalSession | null;
 }

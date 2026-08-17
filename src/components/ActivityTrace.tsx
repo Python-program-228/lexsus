@@ -46,9 +46,9 @@ const ICONS: Record<string, ReactNode> = {
   fs: <FileIcon />,
 };
 
-/** Live activity trace (M1.4): parsed Claude Code steps + watcher
- *  grounding. Headroom: newest 3 expanded, older collapse into a
- *  summary line you can click to expand. */
+/** Live activity trace: web-AI tool steps + watcher grounding. Headroom:
+ *  newest 3 expanded, older collapse into a summary line you can click to
+ *  expand. */
 export default function ActivityTrace() {
   const [items, setItems] = useState<TraceItem[]>([]);
   const [collapsed, setCollapsed] = useState(true);
@@ -174,8 +174,8 @@ export default function ActivityTrace() {
                 <EmptyHeader>
                   <EmptyTitle>No activity yet</EmptyTitle>
                   <EmptyDescription>
-                    Start a Claude Code session in the terminal and watch its
-                    steps appear here.
+                    Let a web AI work on the project — its read, write and
+                    run steps appear here as they execute.
                   </EmptyDescription>
                 </EmptyHeader>
               </EmptyContent>

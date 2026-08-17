@@ -178,11 +178,13 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                 let allow = parsed["allow"].as_bool().unwrap_or(false);
                 let state = app.state::<AppState>();
                 let root = state.project_root.lock().unwrap().clone();
-                let outcome = state
-                    .bridge
-                    .lock()
-                    .unwrap()
-                    .resolve(id, allow, root.as_deref());
+                let mut stream = crate::command_stream(&app);
+                let outcome = state.bridge.lock().unwrap().resolve(
+                    id,
+                    allow,
+                    root.as_deref(),
+                    Some(&mut stream),
+                );
                 let result = match outcome {
                     Some((result, req)) => {
                         let _ = crate::db::record_audit(
@@ -194,6 +196,9 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                             if allow { "user" } else { "denied" },
                             result.ok,
                         );
+                        if allow && result.ok {
+                            crate::record_tool_trace(&state, &app, &req.tool);
+                        }
                         let _ = app.emit(
                             "bridge://approval-resolved",
                             json!({"id": id, "allowed": allow, "result": result}),

@@ -178,27 +178,6 @@ pub fn get_setting(conn: &Connection, key: &str) -> rusqlite::Result<Option<Stri
     }
 }
 
-/// Open a session row; returns its id.
-pub fn begin_session(conn: &Connection, agent: &str) -> rusqlite::Result<i64> {
-    conn.execute(
-        "INSERT INTO sessions (agent, objective) VALUES (?1, NULL)",
-        [agent],
-    )?;
-    Ok(conn.last_insert_rowid())
-}
-
-pub fn end_session(
-    conn: &Connection,
-    session_id: i64,
-    exit_code: Option<i32>,
-) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE sessions SET ended_at = datetime('now'), exit_code = ?1 WHERE id = ?2",
-        (exit_code, session_id),
-    )?;
-    Ok(())
-}
-
 /// Persist a parsed trace step.
 pub fn record_trace_step(
     conn: &Connection,

@@ -1,13 +1,20 @@
-//! PTY layer: interactive sessions and hardened one-shot commands.//!//! Two independent mechanisms, by design://!//! - [`SessionPty`] — a long-lived interactive shell (terminal pane,//!   Claude Code session). Raw output is streamed as *bytes* on an mpsc//!   channel; conversion to `String` happens only at the UI event boundary//!   (see `lib.rs`). A future observation parser (M1.4) taps the same raw//!   byte stream and its failures must never break the terminal.//! - [`run_command`] — a temporary child per call, never the interactive//!   session, with timeout + output cap + kill-on-timeout.
+//! PTY command execution.
+//!
+//! Every command runs as a temporary child in its own PTY — there is no
+//! persistent interactive session. Output is captured with a hard timeout
+//! and an output cap; [`run_command_stream`] additionally reports each
+//! chunk as it arrives so callers can stream a web AI's commands into the
+//! UI.
+
 use crate::shell::Shell;
 
-use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
+use portable_pty::{native_pty_system, PtySize};
 
-use std::io::{Read, Write};
+use std::io::Read;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{sync_channel, RecvTimeoutError, SyncSender};
 
 use std::thread;
 
@@ -27,190 +34,27 @@ pub struct CommandOutput {
     pub truncated: bool,
 }
 
-/// Items flowing from the PTY reader thread to the emit loop.
-pub enum PtyChunk {
-    /// Raw bytes straight from the PTY master.
-    Data(Vec<u8>),
-    /// Coalesced notice: this many chunks were dropped because the channel    /// was full. Emitted when capacity frees — never per-drop, so a busy    /// UI cannot cause an overflow-notification feedback loop.
-    Dropped(u64),
-}
-
-/// A long-lived interactive PTY session.
-pub struct SessionPty {
-    master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
-    child: Box<dyn Child + Send + Sync>,
-    output_rx: Receiver<PtyChunk>,
-    pub shell: Shell,
-    pub cwd: PathBuf,
-    exited: bool,
-}
-
-impl SessionPty {
-    /// Write raw bytes to the session's stdin.    
-    pub fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
-        self.writer.write_all(data)
-    }
-
-    /// Resize the PTY (terminal pane resize events).    
-    pub fn resize(&self, rows: u16, cols: u16) -> std::io::Result<()> {
-        self.master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(io_err)
-    }
-
-    /// Poll for exit; returns the exit code exactly once.    
-    pub fn poll_exit(&mut self) -> Option<i32> {
-        if self.exited {
-            return None;
-        }
-
-        match self.child.try_wait() {
-            Ok(Some(status)) => {
-                self.exited = true;
-                Some(status.exit_code() as i32)
-            }
-            Ok(None) => None,
-            Err(_) => None,
-        }
-    }
-
-    /// Kill the session process.    
-    pub fn kill(&mut self) -> std::io::Result<()> {
-        self.child.kill().map_err(io_err)
-    }
-
-    /// Receive the next raw chunk (or overflow notice) with a timeout.    
-    pub fn recv_output(&mut self, timeout: Duration) -> Result<PtyChunk, RecvTimeoutError> {
-        self.output_rx.recv_timeout(timeout)
-    }
-}
-
-/// Spawn a long-lived interactive shell session.////// The reader thread never blocks on the channel (`try_send`); when the/// channel is full it counts dropped chunks and reports them coalesced via/// [`PtyChunk::Dropped`]. This keeps the PTY reading (no terminal stalls)/// while bounding memory.
-pub fn spawn_session(
-    shell: Shell,
-    cwd: &Path,
-    rows: u16,
-    cols: u16,
-) -> std::io::Result<SessionPty> {
-    let pair = open_pty(rows, cols)?;
-    let mut builder = shell.interactive_command();
-    builder.cwd(cwd);
-    let child = pair
-        .slave
-        .spawn_command(builder)
-        .map_err(|e| io_err(e.to_string()))?;
-    drop(pair.slave);
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| io_err(e.to_string()))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| io_err(e.to_string()))?;
-    let (tx, output_rx) = sync_channel::<PtyChunk>(4096);
-    thread::spawn(move || read_loop(&mut reader, &tx));
-    Ok(SessionPty {
-        master: pair.master,
-        writer,
-        child,
-        output_rx,
-        shell,
-        cwd: cwd.to_path_buf(),
-        exited: false,
-    })
-}
-
-/// Spawn an interactive session running an arbitrary program (e.g. the/// `claude` CLI for M1.3). `shell` is bookkeeping only.
-pub fn spawn_program(
-    program: &str,
-    args: &[&str],
-    cwd: &Path,
-    rows: u16,
-    cols: u16,
-    shell: Shell,
-) -> std::io::Result<SessionPty> {
-    let pair = open_pty(rows, cols)?;
-    let mut builder = portable_pty::CommandBuilder::new(program);
-    for a in args {
-        builder.arg(a);
-    }
-    builder.cwd(cwd);
-    let child = pair
-        .slave
-        .spawn_command(builder)
-        .map_err(|e| io_err(e.to_string()))?;
-    drop(pair.slave);
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| io_err(e.to_string()))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| io_err(e.to_string()))?;
-    let (tx, output_rx) = sync_channel::<PtyChunk>(4096);
-    thread::spawn(move || read_loop(&mut reader, &tx));
-    Ok(SessionPty {
-        master: pair.master,
-        writer,
-        child,
-        output_rx,
-        shell,
-        cwd: cwd.to_path_buf(),
-        exited: false,
-    })
-}
-
-fn read_loop(reader: &mut dyn Read, tx: &SyncSender<PtyChunk>) {
-    let mut dropped: u64 = 0;
-    let mut buf = [0u8; 4096];
-    loop {
-        match reader.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                let chunk = buf[..n].to_vec();
-
-                match tx.try_send(PtyChunk::Data(chunk)) {
-                    Ok(_) => {
-                        if dropped > 0 {
-                            // Capacity freed: send one coalesced notice.
-                            if tx.try_send(PtyChunk::Dropped(dropped)).is_ok() {
-                                dropped = 0;
-                            }
-                        }
-                    }
-                    Err(TrySendError::Full(_)) => dropped += 1,
-                    Err(TrySendError::Disconnected(_)) => break,
-                }
-            }
-        }
-    }
-}
-
-/// Run a shell command in a PTY, capture output, enforce timeout and cap.
+/// Run a shell command, capturing its full output.
 pub fn run_command(
     cmd: &str,
     cwd: &Path,
     timeout: Duration,
     max_output: usize,
 ) -> std::io::Result<CommandOutput> {
-    run_command_with(Shell::detect(), cmd, cwd, timeout, max_output)
+    run_command_stream(Shell::detect(), cmd, cwd, timeout, max_output, &mut |_| {})
 }
 
-/// [`run_command`] with an explicit shell (tests, M2 bridge).
-pub fn run_command_with(
+/// Run a shell command with an explicit shell, streaming each output chunk
+/// to `on_output` as it arrives. Completion is the child process exiting,
+/// not stream EOF (ConPTY streams linger after exit), followed by a quiet
+/// drain for trailing output.
+pub fn run_command_stream(
     shell: Shell,
     cmd: &str,
     cwd: &Path,
     timeout: Duration,
     max_output: usize,
+    on_output: &mut dyn FnMut(String),
 ) -> std::io::Result<CommandOutput> {
     let pair = open_pty(DEFAULT_ROWS, DEFAULT_COLS)?;
     let mut builder = shell.run_command(cmd);
@@ -225,26 +69,14 @@ pub fn run_command_with(
         .try_clone_reader()
         .map_err(|e| io_err(e.to_string()))?;
     let (tx, rx) = sync_channel::<Vec<u8>>(4096);
-    thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if tx.send(buf[..n].to_vec()).is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
+    thread::spawn(move || read_loop(&mut reader, &tx));
+
     let start = Instant::now();
     let mut output = String::new();
-    let mut truncated = false;
     let mut timed_out = false;
+    let mut truncated = false;
     let mut exited = false;
 
-    // Completion signal is the process exiting, not stream EOF: ConPTY    // streams can linger after the process is done (and can deliver    // trailing output after exit), so once the child has exited we drain    // until a quiet period, then finish.
     'read: loop {
         if start.elapsed() >= timeout {
             timed_out = true;
@@ -265,7 +97,9 @@ pub fn run_command_with(
                     truncated = true;
                     break 'read;
                 }
-                output.push_str(&String::from_utf8_lossy(&chunk));
+                let text = String::from_utf8_lossy(&chunk).into_owned();
+                output.push_str(&text);
+                on_output(text);
             }
             Err(RecvTimeoutError::Timeout) => {
                 if exited {
@@ -291,6 +125,20 @@ pub fn run_command_with(
     })
 }
 
+fn read_loop(reader: &mut dyn Read, tx: &SyncSender<Vec<u8>>) {
+    let mut buf = [0u8; 4096];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
 fn open_pty(rows: u16, cols: u16) -> std::io::Result<portable_pty::PtyPair> {
     let pty_system = native_pty_system();
     pty_system
@@ -310,6 +158,7 @@ fn io_err<E: std::fmt::Display>(e: E) -> std::io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn tmpdir() -> PathBuf {
         std::env::temp_dir()
@@ -320,15 +169,6 @@ mod tests {
             Shell::PowerShell => format!("Write-Output '{text}'"),
             Shell::Cmd => format!("echo {text}"),
             _ => format!("echo {text}"),
-        }
-    }
-
-    /// Interactive sessions need a real Enter: CRLF on Windows (a bare LF    /// is echoed but not executed by cmd/PowerShell under ConPTY), LF on    /// Unix. The terminal pane's xterm sends CR for Enter, matching this.    
-    fn enter() -> &'static str {
-        if cfg!(windows) {
-            "\r\n"
-        } else {
-            "\n"
         }
     }
 
@@ -352,8 +192,6 @@ mod tests {
         "definitely-not-a-real-command-xyz".to_string()
     }
 
-    // --- run_command behavioral guarantees ---
-
     #[test]
     fn run_command_echo() {
         let shell = Shell::detect();
@@ -367,6 +205,23 @@ mod tests {
         assert_eq!(out.exit_code, Some(0), "output: {:?}", out.output);
         assert!(out.output.contains("pty-echo"));
         assert!(!out.timed_out && !out.truncated);
+    }
+
+    #[test]
+    fn run_command_streams_output() {
+        let shell = Shell::detect();
+        let mut chunks = String::new();
+        let out = run_command_stream(
+            shell,
+            &echo_cmd(shell, "pty-stream"),
+            &tmpdir(),
+            Duration::from_secs(20),
+            1_048_576,
+            &mut |chunk| chunks.push_str(&chunk),
+        )
+        .unwrap();
+        assert_eq!(out.exit_code, Some(0));
+        assert!(chunks.contains("pty-stream"), "streamed: {chunks:?}");
     }
 
     #[test]
@@ -412,17 +267,19 @@ mod tests {
         assert_ne!(out.exit_code, Some(0));
     }
 
-    /// Windows is a first-class target: prove both shells work, not just    /// whatever `detect()` picks.    
+    /// Windows is a first-class target: prove both shells work, not just
+    /// whatever `detect()` picks.
     #[cfg(windows)]
     #[test]
     fn windows_both_shells_work() {
         for shell in [Shell::Cmd, Shell::PowerShell] {
-            let out = run_command_with(
+            let out = run_command_stream(
                 shell,
                 &echo_cmd(shell, "pty-shells"),
                 &tmpdir(),
                 Duration::from_secs(30),
                 1_048_576,
+                &mut |_| {},
             )
             .unwrap();
             assert_eq!(out.exit_code, Some(0), "shell {shell:?}: {:?}", out.output);
@@ -433,90 +290,16 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn posix_sh_works() {
-        let out = run_command_with(
+        let out = run_command_stream(
             Shell::Sh,
             "echo pty-sh",
             &tmpdir(),
             Duration::from_secs(20),
             1_048_576,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(out.exit_code, Some(0));
         assert!(out.output.contains("pty-sh"));
-    }
-
-    // --- interactive session lifecycle ---
-
-    fn collect_until(session: &mut SessionPty, needle: &str, deadline: Duration) -> String {
-        let start = Instant::now();
-        let mut acc = String::new();
-        loop {
-            let remaining = deadline.saturating_sub(start.elapsed());
-            if remaining.is_zero() {
-                break;
-            }
-
-            match session.recv_output(Duration::from_millis(200)) {
-                Ok(PtyChunk::Data(c)) => {
-                    acc.push_str(&String::from_utf8_lossy(&c));
-                    if acc.contains(needle) {
-                        break;
-                    }
-                }
-                Ok(PtyChunk::Dropped(_)) => {}
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        acc
-    }
-
-    fn wait_for_exit(session: &mut SessionPty, deadline: Duration) -> Option<i32> {
-        let start = Instant::now();
-        while start.elapsed() < deadline {
-            if let Some(code) = session.poll_exit() {
-                return Some(code);
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        None
-    }
-
-    #[test]
-    fn session_write_echo_and_exit() {
-        let shell = Shell::detect();
-        let mut s = spawn_session(shell, &tmpdir(), DEFAULT_ROWS, DEFAULT_COLS).unwrap();
-        s.write(format!("{}{}", echo_cmd(shell, "pty-session"), enter()).as_bytes())
-            .unwrap();
-        let acc = collect_until(&mut s, "pty-session", Duration::from_secs(15));
-        assert!(acc.contains("pty-session"), "output: {acc:?}");
-        s.write(format!("exit{}", enter()).as_bytes()).unwrap();
-        assert_eq!(
-            wait_for_exit(&mut s, Duration::from_secs(10)),
-            Some(0),
-            "expected clean exit"
-        );
-    }
-
-    #[test]
-    fn session_resize_then_continue() {
-        let shell = Shell::detect();
-        let mut s = spawn_session(shell, &tmpdir(), DEFAULT_ROWS, DEFAULT_COLS).unwrap();
-        s.resize(40, 120).unwrap();
-        s.write(format!("{}{}", echo_cmd(shell, "pty-resize"), enter()).as_bytes())
-            .unwrap();
-        let acc = collect_until(&mut s, "pty-resize", Duration::from_secs(15));
-        assert!(acc.contains("pty-resize"), "output: {acc:?}");
-        s.write(format!("exit{}", enter()).as_bytes()).unwrap();
-        wait_for_exit(&mut s, Duration::from_secs(10));
-    }
-
-    #[test]
-    fn session_kill() {
-        let shell = Shell::detect();
-        let mut s = spawn_session(shell, &tmpdir(), DEFAULT_ROWS, DEFAULT_COLS).unwrap();
-        s.kill().unwrap();
-        let code = wait_for_exit(&mut s, Duration::from_secs(10));
-        assert!(code.is_some(), "killed session must report an exit code");
     }
 }

@@ -3,15 +3,11 @@ import type {
   AuditEntry,
   BranchInfo,
   BridgeTool,
-  CommandOutput,
   CommitInfo,
-  ExternalSession,
   FileDiff,
   GitFileStatus,
   Handoff,
-  PtySpawned,
   ToolResult,
-  TraceStep,
 } from "./types";
 
 /** Thin typed wrapper around the Rust core's Tauri commands. */
@@ -74,60 +70,10 @@ export function gitCommitDiff(oid: string): Promise<string> {
   return invoke("git_commit_diff", { oid });
 }
 
-// --- one-shot command + PTY --------------------------------------------------
-
-export function runCommand(
-  command: string,
-  timeoutMs?: number,
-  maxOutputBytes?: number,
-): Promise<CommandOutput> {
-  return invoke("run_command", {
-    command,
-    timeoutMs,
-    maxOutputBytes,
-  });
-}
-
-/** Interactive PTY session (terminal pane). Events arrive on pty://* channels. */
-export function ptySpawn(cwd: string, rows: number, cols: number): Promise<PtySpawned> {
-  return invoke("pty_spawn", { cwd, rows, cols });
-}
-
-/** Claude Code session (M1.3). */
-export function claudeSpawn(cwd: string, rows: number, cols: number): Promise<PtySpawned> {
-  return invoke("claude_spawn", { cwd, rows, cols });
-}
-
-export function ptyWrite(data: string): Promise<void> {
-  return invoke("pty_write", { data });
-}
-
-export function ptyResize(rows: number, cols: number): Promise<void> {
-  return invoke("pty_resize", { rows, cols });
-}
-
-export function ptyKill(): Promise<void> {
-  return invoke("pty_kill");
-}
-
 // --- watcher -----------------------------------------------------------------
 
 export function startWatch(): Promise<void> {
   return invoke("start_watch");
-}
-
-// --- M3 external session mirror ----------------------------------------------
-
-export function observeDetect(): Promise<ExternalSession | null> {
-  return invoke("observe_detect");
-}
-
-export function observeStart(): Promise<ExternalSession> {
-  return invoke("observe_start");
-}
-
-export function observeStop(): Promise<void> {
-  return invoke("observe_stop");
 }
 
 // --- M2 bridge ---------------------------------------------------------------
@@ -136,9 +82,6 @@ export function bridgeTool(tool: BridgeTool): Promise<ToolResult> {
   return invoke("bridge_tool", { tool });
 }
 
-export function shellWrite(input: string): Promise<void> {
-  return invoke("shell_write", { input });
-}
 export function bridgeApprove(id: number, allow: boolean): Promise<ToolResult> {
   return invoke("bridge_approve", { id, allow });
 }
@@ -166,5 +109,3 @@ export function buildHandoff(): Promise<Handoff> {
 export function handoffSend(): Promise<Handoff> {
   return invoke("handoff_send");
 }
-
-export type { TraceStep };

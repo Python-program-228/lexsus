@@ -345,7 +345,7 @@ export default function App() {
             </div>
             <div className="col-span-12 lg:col-span-7">
               {projectRoot ? (
-                <TerminalPane cwd={projectRoot} />
+                <TerminalPane />
               ) : (
                 <Card className="h-full">
                   <CardHeader>
@@ -353,7 +353,7 @@ export default function App() {
                       <TerminalIcon className="size-4 text-muted-foreground" />
                       Terminal
                     </CardTitle>
-                    <CardDescription>no session yet</CardDescription>
+                    <CardDescription>no project yet</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <Empty className="min-h-64 border-0">
@@ -364,8 +364,8 @@ export default function App() {
                         <EmptyHeader>
                           <EmptyTitle>Terminal locked</EmptyTitle>
                           <EmptyDescription>
-                            Pick a folder from the sidebar to start the
-                            interactive terminal.
+                            Pick a folder from the sidebar to watch the web
+                            AI run commands here.
                           </EmptyDescription>
                         </EmptyHeader>
                       </EmptyContent>

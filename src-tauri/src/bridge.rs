@@ -6,7 +6,7 @@
 //! (except sensitive paths), writes and command execution always require
 //! an explicit user approval. All calls are audited to SQLite.
 
-use crate::{git, pty};
+use crate::{git, pty, shell::Shell};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,24 @@ pub enum Tool {
     RunCommand { command: String },
     ListDirectory { path: String },
     GitStatus,
+}
+
+/// A streaming event for a running command. Mirrors the `terminal://run`
+/// event the UI renders.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum CommandEvent {
+    Start {
+        command: String,
+    },
+    Output {
+        data: String,
+    },
+    Exit {
+        code: Option<i32>,
+        timed_out: bool,
+        truncated: bool,
+    },
 }
 
 /// Result of a tool call. `pending` is set when the call awaits an
@@ -95,7 +113,7 @@ impl Bridge {
         root: Option<&Path>,
     ) -> (ToolResult, Option<u64>) {
         match needs_approval(&tool) {
-            None => (execute(&tool, root), None),
+            None => (execute(&tool, root, None), None),
             Some(reason) => {
                 let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
                 self.pending.lock().unwrap().push(ApprovalRequest {
@@ -114,12 +132,14 @@ impl Bridge {
 
     /// Resolve a pending approval. Executes the tool when allowed,
     /// delivers the result to any waiting WS caller, and returns the
-    /// result plus the resolved request (for auditing).
+    /// result plus the resolved request (for auditing). `on_event`
+    /// receives command stream events while a `run_command` executes.
     pub fn resolve(
         &self,
         id: u64,
         allow: bool,
         root: Option<&Path>,
+        on_event: Option<&mut dyn FnMut(CommandEvent)>,
     ) -> Option<(ToolResult, ApprovalRequest)> {
         let mut pending = self.pending.lock().unwrap();
         let idx = pending.iter().position(|p| p.id == id)?;
@@ -127,7 +147,7 @@ impl Bridge {
         drop(pending);
 
         let result = if allow {
-            execute(&req.tool, root)
+            execute(&req.tool, root, on_event)
         } else {
             ToolResult::err(format!("denied by user: {}", req.summary))
         };
@@ -236,7 +256,12 @@ fn resolve_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
 }
 
 /// Execute a tool call locally. `root: None` → tool requires the root.
-pub fn execute(tool: &Tool, root: Option<&Path>) -> ToolResult {
+/// `on_event` streams command events while a `run_command` executes.
+pub fn execute(
+    tool: &Tool,
+    root: Option<&Path>,
+    mut on_event: Option<&mut dyn FnMut(CommandEvent)>,
+) -> ToolResult {
     let Some(root) = root else {
         return ToolResult::err("project root not set".to_string());
     };
@@ -290,10 +315,46 @@ pub fn execute(tool: &Tool, root: Option<&Path>) -> ToolResult {
             }
         }
         Tool::RunCommand { command } => {
-            let out = match pty::run_command(command, root, Duration::from_secs(120), 1_048_576) {
-                Ok(out) => out,
-                Err(e) => return ToolResult::err(format!("run_command failed: {e}")),
+            if let Some(cb) = on_event.as_mut() {
+                cb(CommandEvent::Start {
+                    command: command.clone(),
+                });
+            }
+            let out = {
+                let mut forward = |chunk: String| {
+                    if let Some(cb) = on_event.as_mut() {
+                        cb(CommandEvent::Output { data: chunk });
+                    }
+                };
+                pty::run_command_stream(
+                    Shell::detect(),
+                    command,
+                    root,
+                    Duration::from_secs(120),
+                    1_048_576,
+                    &mut forward,
+                )
             };
+            let out = match out {
+                Ok(o) => o,
+                Err(e) => {
+                    if let Some(cb) = on_event.as_mut() {
+                        cb(CommandEvent::Exit {
+                            code: None,
+                            timed_out: false,
+                            truncated: false,
+                        });
+                    }
+                    return ToolResult::err(format!("run_command failed: {e}"));
+                }
+            };
+            if let Some(cb) = on_event.as_mut() {
+                cb(CommandEvent::Exit {
+                    code: out.exit_code,
+                    timed_out: out.timed_out,
+                    truncated: out.truncated,
+                });
+            }
             let mut text = out.output;
             if out.timed_out {
                 text.push_str("\n[timed out — process killed]");
@@ -403,8 +464,9 @@ mod tests {
     fn resolve_path_rejects_escape() {
         let dir = std::env::temp_dir();
         assert!(resolve_path(&dir, "../outside").is_err());
+        #[cfg(windows)]
         assert!(resolve_path(&dir, "..\\outside").is_err());
-        assert!(resolve_path(&dir, "sub").is_ok() || resolve_path(&dir, "sub").is_err());
+        assert!(resolve_path(&dir, "sub").is_ok());
     }
 
     #[test]
@@ -419,6 +481,7 @@ mod tests {
                 content: "bridge hi".into(),
             },
             Some(&dir),
+            None,
         );
         assert!(r.ok, "{:?}", r.error);
         let r = execute(
@@ -426,24 +489,35 @@ mod tests {
                 path: "hello.txt".into(),
             },
             Some(&dir),
+            None,
         );
         assert!(r.ok);
         assert_eq!(r.output.as_deref(), Some("bridge hi"));
 
         // list directory
-        let r = execute(&Tool::ListDirectory { path: ".".into() }, Some(&dir));
+        let r = execute(&Tool::ListDirectory { path: ".".into() }, Some(&dir), None);
         assert!(r.ok);
         assert!(r.output.unwrap().contains("hello.txt"));
 
         // command
+        let mut events = Vec::new();
         let r = execute(
             &Tool::RunCommand {
                 command: "echo pty-ok".into(),
             },
             Some(&dir),
+            Some(&mut |event| events.push(format!("{event:?}"))),
         );
         assert!(r.ok, "{:?}", r.error);
         assert!(r.output.unwrap().contains("pty-ok"));
+        assert!(
+            events.iter().any(|e| e.starts_with("Start")),
+            "expected a Start event, got {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| e.starts_with("Exit")),
+            "expected an Exit event, got {events:?}"
+        );
 
         // escape rejected
         let r = execute(
@@ -451,11 +525,12 @@ mod tests {
                 path: "../../etc/hosts".into(),
             },
             Some(&dir),
+            None,
         );
         assert!(!r.ok);
 
         // missing root
-        assert!(!execute(&Tool::GitStatus, None).ok);
+        assert!(!execute(&Tool::GitStatus, None, None).ok);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -479,7 +554,7 @@ mod tests {
         let (tx, rx) = wait_channel();
         bridge.channels.lock().unwrap().insert(id, tx);
 
-        let (r, req) = bridge.resolve(id, true, Some(&dir)).unwrap();
+        let (r, req) = bridge.resolve(id, true, Some(&dir), None).unwrap();
         assert!(r.ok);
         assert_eq!(req.id, id);
         assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().ok);
@@ -494,7 +569,9 @@ mod tests {
             Some(&dir),
         );
         assert!(result.pending.is_some());
-        let (r, _) = bridge.resolve(id.unwrap(), false, Some(&dir)).unwrap();
+        let (r, _) = bridge
+            .resolve(id.unwrap(), false, Some(&dir), None)
+            .unwrap();
         assert!(!r.ok);
         assert!(r.error.unwrap().contains("denied"));
 

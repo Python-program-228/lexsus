@@ -12,8 +12,8 @@ You work in Claude Code locally. The desktop app (the **control center**) watche
 
 Two bridges:
 
-- **Bridge A — Local Agent Capture:** observes Claude Code via PTY and captures real project state (files, git, terminal).
-- **Bridge B — Web AI Coding-Agent Bridge:** via a browser extension + local IPC, gives a web AI `read_file`, `write_file`, and `run_command` tools executed locally by the Rust core.
+- **Bridge A — Local Agent Capture:** gathers real project state from git, the filesystem watcher, and the web AI's own tool activity once it takes over (the developer runs their local agent in their own terminal — the app does not host or mirror it).
+- **Bridge B — Web AI Coding-Agent Bridge:** via a browser extension + local IPC, gives a web AI `read_file`, `write_file`, and `run_command` tools executed locally by the Rust core — with every `run_command` streaming live into the app's single read-only terminal.
 
 Four layers from raw capture to delivered handoff:
 
@@ -27,10 +27,9 @@ Four layers from raw capture to delivered handoff:
 | Layer | Technology |
 |-------|------------|
 | Application shell | Tauri (Rust core + React/TypeScript) |
-| OS layer | Rust: git2 (git panel + commit), portable-pty (interactive terminal), native fs watchers, rusqlite |
+| OS layer | Rust: git2 (git panel + commit), portable-pty (one-shot command execution with live streaming), native fs watchers, rusqlite |
 | Local state | SQLite (embedded, fully local) |
 | Compression | Python + FastAPI microservice (LangChain) |
-| Local agent capture | PTY wrapping (Claude Code) |
 | Web AI integration | Browser extension + local IPC tool relay |
 
 ## Repository Layout

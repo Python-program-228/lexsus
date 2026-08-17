@@ -1,8 +1,8 @@
 # Phase 1 — MVP: Prove Web-AI-as-Coding-Agent (Code Complete)
 
-> **Status:** 🔶 Code complete & machine-verified (20/20 Rust tests, clippy/fmt clean, frontend clean). M1 gate (live end-to-end smoke) and the exit gate remain. Not yet committed.
+> **Status:** 🔶 Code complete & machine-verified (13/13 Rust tests, clippy/fmt clean, frontend clean). M1 gate (live end-to-end smoke) and the exit gate remain. Not yet committed.
 > **Branch:** `developing`
-> **M1 Definition of Done:** PTY observation of Claude Code + live activity trace · interactive terminal pane · git panel from app · browser extension paired to desktop app · handoff card → Continue with ChatGPT · web-AI tool access (read_file/write_file/run_command with local execution + result relay) · exit gate = real interrupted task continued by ChatGPT with real tool access, validated with 5–10 devs (metric: successful continuation rate).
+> **M1 Definition of Done:** web-AI tool-call capture + live activity trace · single read-only command terminal streaming `run_command` · git panel from app · browser extension paired to desktop app · handoff card → Continue with ChatGPT · web-AI tool access (read_file/write_file/run_command with local execution + result relay) · exit gate = real interrupted task continued by ChatGPT with real tool access, validated with 5–10 devs (metric: successful continuation rate).
 
 This document explains everything built in Phase 1, how it works, how it was verified, and what remains.
 
@@ -10,7 +10,9 @@ This document explains everything built in Phase 1, how it works, how it was ver
 
 ## 1. What Phase 1 Delivered
 
-Phase 1 turns the Phase 0 skeleton into the real product: **PTY observation of Claude Code** feeding a **live activity trace** grounded against a filesystem watcher, an **interactive terminal pane** (see + type into a live command session), a **full git panel** (status/diff/stage/branch/history/commit), a **local WebSocket bridge + 6-digit pairing** connecting a **Chrome extension** to the desktop app, a **handoff card** that hands an interrupted task to ChatGPT, and **real web-AI tool access** — `read_file` / `write_file` / `run_command` executed locally with an approval policy and an audit trail.
+Phase 1 turns the Phase 0 skeleton into the real product: **web-AI tool-call capture** feeding a **live activity trace** grounded against a filesystem watcher, a **single read-only command terminal** that streams every `run_command` the web AI executes (command, live output, exit status), a **full git panel** (status/diff/stage/branch/history/commit), a **local WebSocket bridge + 6-digit pairing** connecting a **Chrome extension** to the desktop app, a **handoff card** that hands an interrupted task to ChatGPT, and **real web-AI tool access** — `read_file` / `write_file` / `run_command` executed locally with an approval policy and an audit trail.
+
+> **Terminal model:** the app hosts exactly one terminal — the web AI's command monitor. It is read-only (no embedded shell, no Claude Code pane, no keyboard input); the developer's own terminal is where they run Claude Code. Command output streams live into the pane as it executes.
 
 ```
 Phase 1 = M1.1..M1.7 (control center)  →  M1 gate  →  M2 (bridge + extension + handoff)
@@ -20,15 +22,15 @@ Phase 1 = M1.1..M1.7 (control center)  →  M1 gate  →  M2 (bridge + extension
 
 | Milestone | What it ships | Status |
 |-----------|---------------|--------|
-| **M1.1** | Shell abstraction + interactive PTY + hardened `run_command` (Rust core) | ✅ **Done** |
-| **M1.2** | Interactive terminal pane (xterm.js wired to `pty://*`) | ✅ **Done** |
-| **M1.3** | Spawn Claude Code in the session (launch, restart, shutdown) | ✅ **Done** (code) |
-| **M1.4** | Live activity trace — PTY parser + watcher cross-correlation + headroom UI | ✅ **Done** (code) |
+| **M1.1** | Shell abstraction + hardened one-shot `run_command` streaming (Rust core) | ✅ **Done** |
+| **M1.2** | Single command terminal (xterm.js streams `terminal://run` events) | ✅ **Done** |
+| **M1.3** | Web-AI tool-call capture feeding the live trace | ✅ **Done** (code) |
+| **M1.4** | Live activity trace — tool-call recording + watcher cross-correlation + headroom UI | ✅ **Done** (code) |
 | **M1.5** | Watcher persistence (SQLite-backed structured memory, watcher state) | ✅ **Done** (code) |
 | **M1.6** | Git backend — diff, stage/unstage, branches, history (`git2`) | ✅ **Done** (code) |
 | **M1.7** | Git panel UI — status/diff/stage/branch/history/commit from app | ✅ **Done** (code) |
-| **M1 gate** | Full control center verified end-to-end with Claude Code | 🔴 todo (needs live Claude Code CLI) |
-| M2 | Bridge tool access (read/write/run with approvals) + local WS + pairing | ✅ **Done** (code) |
+| **M1 gate** | Full control center verified end-to-end with a web AI | 🔴 todo (needs live ChatGPT + extension) |
+| M2 | Bridge tool access (read/write/run with approvals + live terminal stream) + local WS + pairing | ✅ **Done** (code) |
 | M2 | Browser extension paired to desktop app | ✅ **Done** (code) |
 | M2 | Handoff card → "Continue with ChatGPT" | ✅ **Done** (code) |
 | **Exit gate** | 5–10 real developers continue a real interrupted task | 🔴 todo |
@@ -53,25 +55,18 @@ Phase 1 = M1.1..M1.7 (control center)  →  M1 gate  →  M2 (bridge + extension
 ### `shell.rs` — NEW in M1.1: shell abstraction
 - `Shell` enum: `Sh | Bash | Zsh | Cmd | PowerShell`.
 - `Shell::detect()` — Windows: **PowerShell first** (SystemRoot path check), Cmd fallback; Unix: `$SHELL` basename, default `sh`.
-- `interactive_command()` (session pane) and `run_command(cmd)` (one-shot) builders; `name()` for events/status bar.
+- `run_command(cmd)` builder for one-shot executions (no interactive-session builder — the app hosts no shell).
 - Windows is a first-class target: tests exercise **both** PowerShell and Cmd, not just whatever `detect()` picks.
 
-### `pty.rs` — REWRITTEN in M1.1: sessions + hardened commands
-- **`SessionPty`** (interactive session): spawn / write / resize / `poll_exit` / kill / `recv_output`.
-  - **Raw bytes preserved end-to-end**: `output_rx: Receiver<PtyChunk>` with `PtyChunk::Data(Vec<u8>)`; UTF-8 lossy conversion happens only at the `pty://output` emit boundary — the M1.4 parser taps the same raw stream.
-  - **Coalesced overflow**: reader `try_send`s; on a full channel it counts and reports one `PtyChunk::Dropped(u64)` when capacity frees.
-- **`run_command(cmd, cwd, timeout, max_output)`** — one-shot, **always a temporary child** (never routed through the interactive session).
-  - Completion = **process exit, not stream EOF** (see Windows findings); after exit, a 500 ms quiet-drain captures trailing output.
-  - Timeout → kill; output cap → truncate; both reported via `timed_out` / `truncated`.
-- **`spawn_program(program, args, cwd, rows, cols, shell)`** — NEW in M1.3: spawns an arbitrary program inside the session (used to launch the `claude` CLI).
-
-### `parser.rs` — NEW in M1.4: the PTY line parser
-- Strips ANSI escape sequences, classifies lines into `TraceStep { kind: reading | editing | running | test | error, file, command, detail, ts }`.
-- Patterns: `reading file: X` / `editing file: X` / `writing file: X` / `running: cmd` / `failing|passed|passing → tests` / `error`-style lines; `✖` test failures classify as **test**, not error. 4 unit tests.
+### `pty.rs` — REWRITTEN in M1.1: hardened one-shot command execution
+- Every command runs as a **temporary child** in its own PTY — there is no persistent interactive session.
+- **`run_command_stream(shell, cmd, cwd, timeout, max_output, on_output)`** — streams each output chunk to `on_output` as it arrives, so the bridge can render a web AI's command live; `run_command` is the buffered convenience wrapper.
+- Completion = **process exit, not stream EOF** (see Windows findings); after exit, a 500 ms quiet-drain captures trailing output.
+- Timeout → kill; output cap → truncate; both reported via `timed_out` / `truncated`.
 
 ### `db.rs` — M1.5: persistence
 - Migration **0003_trace_and_audit**: `settings` (project_root, pair_code), `trace_steps` (kind/file/command/detail/agent/ts/confirmed/session_id), `audit_log` (agent/tool/args/allowed/approved_by/ok/ts).
-- Helpers: `set/get_setting`, `begin/end_session`, `record_trace_step`, `confirm_trace_steps`, `record_audit`, `last_audit`, `trace_stats`.
+- Helpers: `set/get_setting`, `record_trace_step`, `confirm_trace_steps`, `record_audit`, `last_audit`, `trace_stats`.
 - DB auto-initialized at `app_data_dir/bridge.db` in the `setup` hook; project root + pair code **restored across launches**.
 
 ### `git.rs` — M1.6: full backend
@@ -81,34 +76,34 @@ Phase 1 = M1.1..M1.7 (control center)  →  M1 gate  →  M2 (bridge + extension
 - `Tool` enum (serde externally-tagged, mirrors `types.ts`): `ReadFile | WriteFile | RunCommand | ListDirectory | GitStatus`.
 - **Policy:** reads auto-approved except **sensitive paths** (`.env*`, `id_rsa`, credentials/secret/token/password/api_key, `.npmrc`, `.gitconfig`, `.netrc`, `*.pem/key/pfx/p12/ppk/crt`, `.git/config`); **writes and commands always require approval**.
 - `resolve_path` — path containment (canonicalize + prefix check, parent-canonicalization for not-yet-existing files); nothing escapes the project root.
-- `execute`: read cap 512 KB + binary detection; write; `run_command` 120 s / 1 MB; list directory; git status.
-- `submit` → auto-execute or queue `ApprovalRequest`; `resolve(id, allow)` executes and delivers results to waiting WS callers via `SyncSender` channels. 4 unit tests.
+- `execute`: read cap 512 KB + binary detection; write; `run_command` 120 s / 1 MB streamed via `CommandEvent` (`start` / `output` / `exit`); list directory; git status.
+- `submit` → auto-execute or queue `ApprovalRequest`; `resolve(id, allow, on_event)` executes (streaming to the terminal via `on_event`) and delivers results to waiting WS callers via `SyncSender` channels. 4 unit tests.
 
 ### `ws.rs` — NEW in M2: local WebSocket server
 - `ws://127.0.0.1:45241` (loopback only), **6-digit pairing code** gates every connection.
-- Protocol: `pair` / `pair-ok` / `pair-error` / `ping` / `pong`; `tool` (from extension) runs on a **spawned thread** so the connection stays free to receive `approve` while a call waits; `approve` (extension decision → resolve + audit + UI event); `handoff-request` → builds + pushes the handoff card.
+- Protocol: `pair` / `pair-ok` / `pair-error` / `ping` / `pong`; `tool` (from extension) runs on a **spawned thread** so the connection stays free to receive `approve` while a call waits; `approve` (extension decision → resolve + audit + terminal stream + trace + UI event); `handoff-request` → builds + pushes the handoff card.
 - App → extension: `tool-result`, `handoff` (pushed). `push_handoff` / `send` via `Arc<Mutex<WebSocket>>` (tungstenite 0.24 has no split/Sender).
 
 ### `lib.rs` — wiring everything
-- `AppState`: conn, project_root, session, parser, pair_code, ws_connected, ws_tx, bridge, session_id, objective, recent_edits.
-- **`install_session`** — the capture loop: `pty://output` → parser feed → `trace://step` emit + DB record + `recent_edits` ring (30 s window); `trace://confirm` on watcher match; session lifecycle `begin/end_session`.
-- **`claude_spawn`** — Windows: `cmd /c claude`; Unix: `claude`, in the project dir.
+- `AppState`: conn, project_root, pair_code, ws_connected, ws_tx, bridge, objective, recent_edits.
+- **`command_stream(app)`** — maps bridge `CommandEvent`s to `terminal://run` events (`{kind: start|output|exit}`) rendered live by the terminal pane.
+- **`record_tool_trace(state, app, tool)`** — maps each executed tool call to a `trace://step` (reading/editing/running, agent=`web`), persists it, and pushes `recent_edits` so the watcher can confirm edits.
 - **`start_watch`** — watcher thread: filters `.git`/`node_modules`/`target`, emits `fs://event`, cross-correlates with `recent_edits` → `trace://confirm` + `confirm_trace_steps`.
-- **`tool_call(app, tool, source)`** — shared by desktop command and WS relay: submit → auto (audit now) or approval-requested (event) → WS callers wait ≤ 300 s.
+- **`tool_call(app, tool, source)`** — shared by desktop command and WS relay: submit → auto (audit + trace now) or approval-requested (event) → WS callers wait ≤ 300 s.
 - **`build_handoff`** — honest heuristic progress from real trace stats (step count, errors), files touched, next step, editable objective.
-- Commands: init_database, set/get_project_root, all git commands, run_command, start_watch, pty_*, claude_spawn, bridge_tool/approve/audit, pair_get_code/pair_status, set_objective, build_handoff, handoff_send (push to extension, clipboard fallback).
+- Commands: init_database, set/get_project_root, all git commands, start_watch, bridge_tool/approve/audit, pair_get_code/pair_status, set_objective, build_handoff, handoff_send (push to extension, clipboard fallback).
 
 ---
 
 ## 4. The Frontend
 
-- **`src/components/TerminalPane.tsx`** (M1.2 + M1.3): xterm.js + FitAddon (dark theme, 5000-line scrollback); raw `pty://output` in, `term.onData` out (xterm sends `\r` for Enter — matching ConPTY); debounced resize via `pty_resize` + ResizeObserver `fit()`; listeners registered **before** auto-spawn so the synchronous `pty://spawned` emit is never missed; Restart/Kill; overflow badge; **Shell / Claude Code mode buttons** (restart re-spawns in the chosen mode via `claude_spawn`).
-- **`src/components/ActivityTrace.tsx`** (M1.4): live steps with per-kind icons; editing steps show `✓ saved` / `… waiting` (watcher grounding); **headroom collapse** — newest 3 expanded, older steps fold into an "N earlier steps · M files touched" summary line (per `docs/ui-design.md`).
+- **`src/components/TerminalPane.tsx`** (M1.2): xterm.js + FitAddon (dark theme, 5000-line scrollback); **read-only** — subscribes to `terminal://run` and renders `$ command` headers, live output, and exit/timed-out/truncated status. No keyboard input, no embedded shell, no tabs.
+- **`src/components/ActivityTrace.tsx`** (M1.4): live steps with per-kind icons; editing steps show `✓ saved` / `… waiting` (watcher grounding); **headroom collapse** — newest 3 expanded, older steps fold into an "N earlier steps · M files touched" summary line (per `docs/ui-design.md`). Fed by web-AI tool calls, not PTY parsing.
 - **`src/components/GitPanel.tsx`** (M1.7): Status tab (table with stage/unstage, status badges, diff preview, commit box), Branch tab (list + checkout), History tab (commit list + per-commit diff).
 - **`src/components/BridgePanel.tsx`** (M2): pairing code display + connection dot, approval cards (Allow/Deny from the desktop), tool sandbox (read/write/run against real paths), audit trail.
 - **`src/components/HandoffPanel.tsx`** (M2): builds the real handoff card (objective editable, progress/files/errors stats, next step) → **Continue with ChatGPT** (pushes to extension + clipboard fallback).
 - **`src/App.tsx`**: sidebar (project root, **restored from settings on launch**), statusbar, two-column grid layout with all panels; `startWatch()` after root set.
-- **`src/lib/bridge.ts` / `types.ts`**: typed wrappers for every command; `TraceStep/FileDiff/BranchInfo/CommitInfo/BridgeTool/ToolResult/ApprovalRequested/AuditEntry/Handoff` types.
+- **`src/lib/bridge.ts` / `types.ts`**: typed wrappers for every command; `TraceStep/FileDiff/BranchInfo/CommitInfo/BridgeTool/ToolResult/ApprovalRequested/AuditEntry/Handoff/TerminalRunEvent` types.
 
 ---
 
@@ -133,18 +128,16 @@ Phase 1 = M1.1..M1.7 (control center)  →  M1 gate  →  M2 (bridge + extension
 
 ## 7. How It Was Verified (on this machine)
 
-### Test matrix — 20 Rust tests, ~4 s
+### Test matrix — 13 Rust tests, ~4 s
 
 | Area | Tests | Proves |
 |------|-------|--------|
-| shell | detect / names / one-shot builders | detection works, names stable, args carried |
-| run_command | echo / timeout / cap / failure / both-shells | exit 0 + output; kill-on-timeout; truncation; **Cmd and PowerShell both** execute |
-| session | write_echo_and_exit / resize_then_continue / kill | interactive lifecycle (CRLF-aware on Windows) |
-| parser (4) | file lines / test+error lines / ANSI strip / commands | M1.4 classification |
-| bridge (4) | sensitive paths / policy / path escape / execution+approval roundtrip | M2 permission model + containment |
+| shell | detect / one-shot builders | detection works, args carried |
+| run_command | echo / stream / timeout / cap / failure / both-shells | exit 0 + output; **live chunk streaming**; kill-on-timeout; truncation; **Cmd and PowerShell both** execute |
+| bridge (4) | sensitive paths / policy / path escape / execution+approval roundtrip (incl. command stream events) | M2 permission model + containment + streaming |
 
 ```
-cargo test                          → 20 passed; 0 failed (~4s)
+cargo test                          → 13 passed; 0 failed (~4s)
 cargo fmt --check                   → clean
 cargo clippy --all-targets -- -D warnings → clean
 cargo build (lib + bin)             → clean
@@ -170,14 +163,14 @@ cmd /c "call ""C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC
 
 ## 8. Manual Test Script (M1 gate — the remaining end-to-end check)
 
-1. Launch the app (`pnpm tauri dev`, command above) → set project folder → terminal auto-spawns.
-2. Click **Claude Code** in the terminal header → `claude` starts in the project dir (requires the CLI installed).
-3. Ask it to do something real (edit a file, run a test) → the **activity trace** shows reading/editing/running steps live; edited files flip to `✓ saved` when the watcher confirms.
-4. **Git panel**: stage/unstage, view diffs, commit, switch branches, browse history.
-5. Quit Claude mid-task → **Handoff panel**: rebuild → card shows honest progress/files/errors.
-6. **Extension**: load `extension/` unpacked → popup → enter the code from the Bridge panel → paired dot green.
-7. Click **Continue with ChatGPT** (or the popup's "Send handoff to ChatGPT") → handoff card appears on chatgpt.com → "Continue with ChatGPT" types the agent prompt.
-8. Ask ChatGPT to do a step; when it writes `read_file("path")` / `run_command("...")`, the bridge executes locally, writes/commands ask for **Allow/Deny** (desktop panel or chat widget), results return into the chat; the **audit trail** records everything.
+1. Launch the app (`pnpm tauri dev`, command above) → set project folder → watcher starts; the terminal pane shows a hint line (it has no session of its own).
+2. **Extension**: load `extension/` unpacked → popup → enter the code from the Bridge panel → paired dot green.
+3. Set an objective in the **Handoff panel** → click **Continue with ChatGPT** (or the popup's "Send handoff to ChatGPT") → handoff card appears on chatgpt.com → "Continue with ChatGPT" types the agent prompt.
+4. Ask ChatGPT to do a step; when it writes `read_file("path")` / `run_command("...")`, the bridge executes locally, writes/commands ask for **Allow/Deny** (desktop panel or chat widget).
+5. When you **Allow** a `run_command` (e.g. `npm test`), the **command terminal** streams it live: `$ npm test`, output as it arrives, then exit status.
+6. The **activity trace** shows reading/editing/running steps live (agent `web`); edited files flip to `✓ saved` when the watcher confirms.
+7. **Git panel**: stage/unstage, view diffs, commit, switch branches, browse history.
+8. Mid-task, stop working → **Handoff panel**: rebuild → card shows honest progress/files/errors from the web AI's real work.
 
 ---
 
@@ -185,7 +178,7 @@ cmd /c "call ""C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC
 
 | Remaining | What it involves |
 |-----------|------------------|
-| **M1 gate** | Live end-to-end run with a real Claude Code session (manual script §8) |
+| **M1 gate** | Live end-to-end run with a real web AI session (manual script §8) |
 | **Exit gate** | 5–10 real developers continue a real interrupted task with ChatGPT, metric: successful continuation rate |
 | Hardening (out of Phase 1 scope) | Chrome mixed-content/WS permissions edge cases; extension → Firefox port; WS TLS for non-loopback use |
 
@@ -194,7 +187,7 @@ cmd /c "call ""C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC
 ## 10. How to Extend (Phase 2 starting points)
 
 - **Layer 3 compression:** `compression-service/main.py` (`/compress` 501 stub) becomes real — summarize trace + diff state into the handoff payload.
-- **Automatic failover:** detect a crashed/hung local session → offer the handoff card without user action (the trace + watcher state already make this detectable).
+- **Pre-handoff context:** read the developer's own Claude Code transcript (`~/.claude/projects/*.jsonl`) on demand so the handoff card is seeded with the real interrupted task — no embedded terminal needed.
 - **More web AIs:** Claude.ai / Gemini — the extension's content script patterns generalize per site.
 - **Native messaging:** swap the WS transport for Chrome native messaging if a signed/loopback-secured channel is ever needed.
 
