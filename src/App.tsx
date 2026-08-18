@@ -340,7 +340,7 @@ export default function App() {
           </div>
         ) : (
           <div className="grid grid-cols-12 gap-4">
-            <div className="col-span-12 lg:col-span-7 lg:row-span-2 lg:min-h-[640px]">
+            <div className="col-span-12 lg:col-span-7 lg:row-span-2 lg:h-[640px]">
               {projectRoot ? (
                 <TerminalPane />
               ) : (
