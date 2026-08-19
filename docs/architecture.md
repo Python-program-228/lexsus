@@ -3,14 +3,14 @@
 The system connects your local coding work to **web AIs** (ChatGPT, Claude.ai, Gemini). It captures real project state while you work locally, and when your local agent is interrupted, it turns a web AI into a **working coding agent** on your machine — with real read, write, and terminal access.
 
 There are two bridges:
-- **Bridge A — Local Agent Capture:** observes Claude Code running locally (PTY) to capture the real state of your work.
-- **Bridge B — Web AI Coding-Agent Bridge:** lets a web AI act on your local machine through a browser extension + local IPC tool relay.
+- **Bridge A — Local Agent Capture:** gathers real project state for the handoff (git, filesystem watcher, web-AI tool activity). The developer's own terminal (Claude Code) is not hosted or mirrored by the app.
+- **Bridge B — Web AI Coding-Agent Bridge:** lets a web AI act on your local machine through a browser extension + local IPC tool relay. Its `run_command` output streams live into the app's single read-only terminal.
 
 ## The Four Layers (State Capture → Delivery)
 
 | Layer | Purpose | What it stores / does |
 |-------|---------|-----------------------|
-| 1. Session Archive | Raw capture | Claude Code session stdin/stdout, timestamps, exit codes; project file/git/terminal events |
+| 1. Session Archive | Raw capture | Executed web-AI tool calls (reads/writes/commands), timestamps; project file/git/terminal events |
 | 2. Structured Project Memory | Facts, not chat | Objective, decisions, failed attempts, constraints, changed files, progress |
 | 3. Context Compression | Make state handoff-sized | LLM-summarized snapshot sized for a fresh web AI's context window |
 | 4. Handoff Engine | Translate + deliver | Formats Layer 3 into a web-AI prompt and establishes the coding-agent bridge |
@@ -19,7 +19,7 @@ There are two bridges:
 
 ### 1. Session Archive
 
-The lowest-level capture. Every keystroke, command, and output from the local agent (Claude Code) is recorded to SQLite with timestamps and exit codes, alongside filesystem and git events. This is the raw, lossless record.
+The lowest-level capture. Every executed web-AI tool call (read, write, run) is recorded to SQLite with timestamps alongside filesystem and git events. This is the raw, lossless record of what happened to the project.
 
 ### 2. Structured Project Memory
 
@@ -35,10 +35,10 @@ The compressed snapshot is formatted into a web-AI-specific handoff prompt and, 
 
 ## Data Flow
 
-1. Claude Code works on the project → the bridge captures state (Layer 1, cross-checked to Layer 2).
-2. On interruption, Layer 3 compresses the state into a handoff.
+1. You work on the project in your own terminal (e.g. Claude Code); the app watches the project folder.
+2. On interruption, you open the app and build a handoff from the objective plus git/fs-watcher/trace state (Layer 3 compresses it; the compression service remains future work).
 3. Layer 4 formats it for the chosen web AI and, via the extension, starts a session with the handoff as opening context.
-4. The web AI acts as a coding agent through local tool execution (`read_file`, `write_file`, `run_command`), with every action shown in the live activity trace and grounded against the real local project.
+4. The web AI acts as a coding agent through local tool execution (`read_file`, `write_file`, `run_command`). Every `run_command` streams live into the app's single terminal pane; every action is recorded in the live activity trace and grounded against the real local project.
 
 ## The Technical Opportunity
 

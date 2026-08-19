@@ -4,10 +4,10 @@
 
 1. **Tauri desktop shell** — single monitored project folder.
 2. **Rust-based file watcher + git state extraction** — OS-native watchers + `git2`.
-3. **PTY observation of Claude Code** — capture activity and feed the live trace.
+3. **Web-AI tool-call capture** — reads/writes/runs recorded and grounded against the watcher.
 4. **SQLite-backed structured memory** — no compression service yet; raw structured state is small enough to hand off directly at MVP scale.
 5. **Live activity trace UI** with headroom-collapsing behavior.
-6. **Interactive terminal pane** — see and type into live command output.
+6. **Single command terminal** — every web-AI `run_command` streams live (read-only, no embedded shell).
 7. **Git panel (full workflow)** — status, diff, stage/unstage, branch, history, and **commit from the app**.
 8. **Browser extension** paired with the desktop app.
 9. **Manual interruption → handoff card → "Continue with ChatGPT"** with the web AI able to **read files, write files, and run commands** locally.

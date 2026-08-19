@@ -2,6 +2,8 @@
 
 > **"Your AI can change. Your work doesn't."**
 
+> **Current model (single-terminal):** the app hosts exactly one terminal — the read-only live view of the web AI's `run_command` executions. The developer runs their local agent (Claude Code) in their **own** terminal; the app does not embed or mirror it. Sections below that describe an embedded interactive terminal / Claude Code pane / PTY session capture refer to the earlier design and are superseded by this.
+
 A local-first desktop application that connects your local coding work to **web AIs** (ChatGPT, Claude.ai, Gemini). When your local coding agent — like Claude Code — hits its usage limit, crashes, or you simply want to switch, the bridge captures the real state of your work and hands the task to a **web AI**, turning it into a real coding agent that can **read your files, write files, and run terminal commands** on your local machine.
 
 ---
@@ -178,7 +180,7 @@ Different web AIs have different context limits, tool-format expectations, and b
 | Terminal / command exec | `portable-pty` — run commands, observe output, and **interact with the live terminal pane** |
 | SQLite access | `rusqlite` |
 
-The git panel and interactive terminal pane are powered directly by `git2` (full git workflow incl. commit) and `portable-pty` (live, interactive command I/O) — no external git/terminal process needed.
+The git panel (full workflow incl. commit) and the command terminal are powered directly by `git2` and `portable-pty` — no external git/terminal process needed.
 
 ### Local State — SQLite
 Session archive (Layer 1) and structured memory (Layer 2) live in embedded SQLite — zero ops, fully local, no server dependency.
@@ -187,7 +189,7 @@ Session archive (Layer 1) and structured memory (Layer 2) live in embedded SQLit
 A local microservice for LLM-based context compression (Layer 3), isolated from the Rust core, called over localhost.
 
 ### Local Agent Capture — CLI Wrapping (PTY)
-Claude Code (the local source agent) is spawned/observed inside a PTY controlled by the Rust core to capture stdin/stdout and tool activity.
+Claude Code (the local source agent) is run by the developer in their own terminal; project state for the handoff is gathered on demand from git, the filesystem watcher, and the web AI's own tool activity.
 
 ### Web AI Bridge — Browser Extension + Local IPC
 - A **browser extension** (Chrome/Firefox) talks to the desktop app over a localhost/local channel (native messaging or WebSocket).
@@ -233,7 +235,7 @@ Rust provides C-level OS control with memory safety. Given the app executes comm
 ### Desktop Control Center
 - **F19 — Git Panel (full workflow):** View status, staged/unstaged changes, diffs, branches, and commit history via `git2`; stage/unstage files.
 - **F20 — Commit from App:** Write a commit message and commit directly from the desktop UI, without touching the terminal.
-- **F21 — Interactive Terminal Pane:** See live command output and type/interact with the running PTY directly from the app.
+- **F21 — Single Command Terminal:** see every command the web AI runs, streamed live (command header, output, exit status). Read-only — the developer runs their own terminal outside the app.
 - **F22 — Unified Timeline:** The activity trace, terminal output, and git events are all correlated in one chronological view.
 
 ### Continuity Controls
@@ -322,10 +324,10 @@ You control your entire git workflow without ever opening a terminal:
   - See a live preview of what will be committed (staged changes).
   - Click **Commit** — committed via `git2` locally. Optional: push after commit.
 
-### 7.6 The Interactive Terminal Pane
-- See **live command output** for anything the agent (local or web AI) runs.
-- **Type directly into it** — run your own commands, answer prompts, or take over a hanging process.
-- Everything in the terminal is correlated into the unified timeline with the activity trace.
+### 7.6 The Single Command Terminal
+- See **live command output** for anything the web AI runs via `run_command`: a `$ command` header, output as it arrives, then exit status.
+- **Read-only** — there is no embedded shell; you run your own terminal (Claude Code, etc.) outside the app.
+- Command output is correlated into the unified timeline with the activity trace.
 
 ### 7.7 Interruption → Handoff Card
 - Claude Code hits its limit (or crashes, or you stop it).
@@ -494,6 +496,7 @@ Validate with 5–10 real developers.
 ### Phase 3 — Automatic Failover
 - Detect local-agent interruption automatically and offer web-AI continuation.
 - **Exit gate:** automatic continuation works without re-explanation.
+- **Implemented:** `failover.rs` state machines (local: `inactive → working → stalled → interrupted`, vetoed by any file change; web: WS-drop / silence detection), `transcript.rs` Claude Code JSONL reader feeding objective + context + end reason into the handoff, auto-delivery (`auto:true` → the extension inserts and submits the prompt), web→web failover to Claude.ai/Gemini + web→local hand-back, `failover_log` telemetry (successful continuation rate), and a failover panel in the UI.
 
 ### Phase 4 — Orchestration
 - Route parts of a task across local + multiple web AIs with single project state.
@@ -510,7 +513,7 @@ Validate with 5–10 real developers.
 | Milestone | Deliverable | Definition of Done |
 |-----------|-------------|--------------------|
 | **M0 — Scaffold** | Tauri shell + Rust core + SQLite schema | App launches; watcher & git extraction run; schema migrates |
-| **M1 — Capture** | Claude Code observed; activity trace + interactive terminal render | Session recorded; steps shown; file changes cross-validated; user can type in terminal |
+| **M1 — Capture** | Project state captured from git + fs watcher + web-AI tool activity; activity trace + single command terminal render | Steps shown; file changes cross-validated; web-AI commands stream live |
 | **M2 — Handoff** | Interruption → card → ChatGPT connects; git panel live | ChatGPT reads/writes/runs commands locally; changes visible in git panel and committable from app; developer does not re-explain; 5–10 devs validate |
 | **M3 — Multi-web-AI** | Claude.ai + Gemini targets; compression live | Multiple web AIs continue with compressed context |
 | **M4 — Failover** | Automatic detection + continuation | Auto-continuation works; continuation rate measured |

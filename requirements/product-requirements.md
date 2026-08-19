@@ -10,13 +10,13 @@ A local-first desktop app that lets a developer continue an interrupted AI codin
 
 ## Functional Requirements
 
-### 1. Local Session Capture
-- FR-1.1: Capture every local agent (Claude Code) PTY session's stdin/stdout with timestamps and exit codes.
-- FR-1.2: Store captured sessions in embedded SQLite (Layer 1 — Session Archive).
+### 1. Activity Capture
+- FR-1.1: Record every executed web-AI tool call (read_file / write_file / run_command) with timestamps.
+- FR-1.2: Store captured activity in embedded SQLite (Layer 1 — Session Archive).
 - FR-1.3: Cross-check activity against OS-native file watchers to confirm real file changes.
 
 ### 2. Project State Memory
-- FR-2.1: Extract structured facts from sessions: objective, decisions, failed attempts, constraints, changed files.
+- FR-2.1: Extract structured facts from captured activity: objective, decisions, failed attempts, constraints, changed files.
 - FR-2.2: Store structured memory in SQLite (Layer 2 — Structured Project Memory).
 
 ### 3. Context Compression
@@ -37,7 +37,7 @@ A local-first desktop app that lets a developer continue an interrupted AI codin
 - FR-6.2: Cross-reference reported actions with the filesystem watcher to only report real file changes.
 
 ### 7. Desktop Control Center
-- FR-7.1: Provide an interactive terminal pane showing live command output.
+- FR-7.1: Provide a single read-only terminal pane streaming every web-AI `run_command` live (command, output, exit status).
 - FR-7.2: Provide a full git panel (status, diff, stage/unstage, branch, history).
 - FR-7.3: Allow committing from the app (via `git2`).
 
@@ -56,5 +56,5 @@ A local-first desktop app that lets a developer continue an interrupted AI codin
 - Desktop app must support macOS, Windows, and Linux.
 - Browser extension (Chrome/Firefox) for web-AI integration.
 - Web-AI targets: ChatGPT, Claude.ai, Gemini.
-- Local source agent: Claude Code (optionally Codex CLI).
+- Local source agent: Claude Code (optionally Codex CLI) — run by the developer in their own terminal; the app does not host it.
 - OS-native file watchers: fsevents / inotify / ReadDirectoryChangesW.

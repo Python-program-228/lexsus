@@ -1,6 +1,6 @@
 # UI Design — The Desktop Control Center
 
-The desktop app is the **control center** — one place where you see everything happening to your work. It combines a live activity trace, an interactive terminal pane, and a full git workflow, all correlated in a single timeline.
+The desktop app is the **control center** — one place where you see everything happening to your work. It combines a live activity trace, a single command terminal (the web AI's), and a full git workflow, all correlated in a single timeline.
 
 ## Control Center Layout
 
@@ -9,32 +9,32 @@ The desktop app is the **control center** — one place where you see everything
 │  SIDEBAR      │  MAIN PANEL                                │
 │               │  ┌──────────────────────────────────────┐  │
 │  Projects     │  │  LIVE ACTIVITY TRACE                 │  │
-│   • myapp  ▸  │  │  ▾ Refactor auth (Claude Code)       │  │
+│   • myapp  ▸  │  │  ▾ Refactor auth (web AI)            │  │
 │               │  │      Reading auth.ts                 │  │
 │  Sessions     │  │      ✏ Editing auth.ts [3 lines]     │  │
 │   • #12 ▸     │  │      ▾ Running: npm test             │  │
 │   • #11 ▸     │  └──────────────────────────────────────┘  │
 │               │  ┌──────────────────────────────────────┐  │
-│  Git          │  │  TERMINAL PANE                       │  │
+│  Git          │  │  COMMAND TERMINAL (web AI)           │  │
 │   • status    │  │  $ npm test                          │  │
 │   • diff      │  │  PASS auth.test.ts                   │  │
 │   • branch    │  └──────────────────────────────────────┘  │
 │   • commit    │                                            │
-│               │  STATUS BAR: ● Claude Code · running · 64% │
+│               │  STATUS BAR: ● bridge online               │
 └───────────────┴────────────────────────────────────────────┘
 ```
 
-- **Sidebar:** Projects, Sessions, Git.
-- **Live Activity Trace:** real-time tree of every action.
-- **Terminal Pane:** interactive — see live output and type.
-- **Status Bar:** current agent, session state, watcher status, compression-service status.
+- **Sidebar:** Projects, Git, Pairing.
+- **Live Activity Trace:** real-time tree of every web-AI action.
+- **Command Terminal:** the single terminal in the app — a read-only live view of every command the web AI runs.
+- **Status Bar:** pairing/bridge state.
 
 ## Live Activity Trace
 
 As the agent (local or web AI) works, every observed action becomes a node in a live step tree.
 
 ```
-▾ Session: Refactor auth (Claude Code)
+▾ Session: Refactor auth (web AI)
         Reading auth.ts
         Reading db/schema.sql
     ✏   Editing auth.ts           [3 lines changed]
@@ -47,7 +47,7 @@ As the agent (local or web AI) works, every observed action becomes a node in a 
 
 Each line is derived from two correlated signals:
 
-1. **Parsed PTY / tool-call output** — what command ran, what file path appeared
+1. **Bridge tool-call records** — what the web AI read, wrote, or ran
 2. **Independent filesystem watcher** — confirming a file's mtime actually changed
 
 Cross-referencing both avoids showing "wrote a file" when the agent merely printed a code block without saving.
@@ -72,11 +72,14 @@ The core UX problem: a long session generates far more step-detail than a user w
 - **History:** browse commit history, view past commits/diffs.
 - **Commit from the app:** write a commit message, preview staged changes, click **Commit** (via `git2`); optional push.
 
-## Interactive Terminal Pane
+## Command Terminal (the web AI's)
 
-- See **live command output** for anything the agent runs.
-- **Type directly into it** — run your own commands, answer prompts, or take over a hanging process.
-- Everything in the terminal is correlated into the unified timeline with the activity trace.
+The app has exactly **one terminal** — the read-only live view of the commands the web AI runs on the project:
+
+- Every approved `run_command` streams in as it executes: a `$ command` header, the live output, and a final exit/timed-out/truncated status.
+- It is a **monitor, not a session**: there is no embedded shell or Claude Code pane, and no keyboard input. The user's control point is the **approval cards** (Allow/Deny) — they see each command the moment it starts and decide before it touches the machine.
+- The user works in their own terminal (e.g. Claude Code) as usual; the app only watches what the *web AI* does.
+- Everything shown is correlated into the unified timeline with the activity trace.
 
 ## Web AI Activity View
 
