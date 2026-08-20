@@ -4,7 +4,7 @@
 
 A local-first desktop app that connects your local coding work to **web AIs** (ChatGPT, Claude.ai, Gemini). When your local coding agent — like Claude Code — hits its usage limit, crashes, or you simply want to switch, the bridge captures the real state of your work and turns a web AI into a **real coding agent** that can **read your files, write files, and run terminal commands** on your local machine.
 
-## Overview
+## Overview.    
 
 You work in Claude Code locally. The desktop app (the **control center**) watches your project in real time — files, git state, terminal — and shows a live activity trace. When your local session is interrupted, the bridge builds a handoff from real project state and delivers it to a web AI (ChatGPT, Claude.ai, Gemini) via a browser extension. The web AI then acts as a coding agent on your machine: it can read, write, and run commands, with every action shown live and grounded to real operations on disk. You never re-explain the project.
 
