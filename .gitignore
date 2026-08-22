@@ -42,3 +42,8 @@ rustup-init.sh
 requirements/*.pdf
 src-tauri/*.sqlite
 aicb.sqlite
+
+
+# Added by cargo
+
+/target
