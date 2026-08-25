@@ -17,12 +17,16 @@ const HANDOFF_PROMPT = (h) =>
     `You are now the coding agent for the local project on the paired machine.`,
     `To act on the real filesystem you may use these tools, one per line:`,
     `read_file("path")`,
-    `write_file("path", "full new content")`,
     `run_command("shell command")`,
     `list_directory("path")`,
     `git_status`,
     ``,
-    `Each tool line is executed locally by the bridge and the real result will be returned here. Never claim to have read or written files without the tool results.`,
+    `For write_file — and ANY tool whose argument spans multiple lines — you MUST instead emit an acb block containing one JSON object:`,
+    '```acb',
+    '{"tool":"write_file","path":"src/example.ts","content":"<entire new file content>"}',
+    '```',
+    ``,
+    `Each tool call is executed locally by the bridge and the real result will be returned here. Never claim to have read or written files without the tool results.`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -101,6 +105,98 @@ const TOOL_RE = [
   { kind: "GitStatus", re: /git_status\b/i },
 ];
 
+// Fenced acb blocks: ```acb\n{"tool":"write_file","path":"...","content":"..."}\n```
+// Chat UIs render fences as styled <pre> elements, so the literal ```
+// never reaches textContent — instead we scan for JSON objects carrying
+// a "tool"/"name" key and pull each one out with a string-aware,
+// balanced-brace matcher (multi-line content safe).
+const TOOL_KEY_RE = /["'](?:tool|name)["']\s*:/gi;
+
+function balancedObjectAt(text, start) {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null; // still streaming — retried on the next scan pass
+}
+
+function parseJsonBlock(body) {
+  let obj;
+  try {
+    obj = JSON.parse(body.trim());
+  } catch {
+    return null;
+  }
+  const raw = String(obj.tool ?? obj.name ?? "");
+  const name = raw.toLowerCase().replace(/[\s-]/g, "_");
+  switch (name) {
+    case "read_file":
+      return typeof obj.path === "string"
+        ? { ReadFile: { path: obj.path } }
+        : null;
+    case "write_file":
+      return typeof obj.path === "string"
+        ? { WriteFile: { path: obj.path, content: String(obj.content ?? "") } }
+        : null;
+    case "run_command":
+      return typeof obj.command === "string"
+        ? { RunCommand: { command: obj.command } }
+        : null;
+    case "list_directory":
+      return typeof obj.path === "string"
+        ? { ListDirectory: { path: obj.path } }
+        : null;
+    case "git_status":
+      return { GitStatus: null };
+    default:
+      return null;
+  }
+}
+
+// Extract acb tool objects from free text. Returns the tools plus the
+// text with those objects blanked out (so the line scanner can't
+// double-capture their contents).
+function extractAcbTools(text) {
+  const tools = [];
+  const blanks = [];
+  TOOL_KEY_RE.lastIndex = 0;
+  let k;
+  while ((k = TOOL_KEY_RE.exec(text)) !== null) {
+    const start = text.lastIndexOf("{", k.index);
+    if (start === -1 || k.index - start > 40) continue;
+    const objText = balancedObjectAt(text, start);
+    if (!objText) continue;
+    const tool = parseJsonBlock(objText);
+    if (tool) {
+      tools.push(tool);
+      blanks.push([start, start + objText.length]);
+      TOOL_KEY_RE.lastIndex = start + objText.length;
+    }
+  }
+  let rest = text;
+  for (let i = blanks.length - 1; i >= 0; i--) {
+    rest =
+      rest.slice(0, blanks[i][0]) +
+      " ".repeat(blanks[i][1] - blanks[i][0]) +
+      rest.slice(blanks[i][1]);
+  }
+  return { tools, rest };
+}
+
 function parseToolLine(line) {
   for (const { kind, re } of TOOL_RE) {
     const m = line.match(re);
@@ -121,6 +217,18 @@ function parseToolLine(line) {
   return null;
 }
 
+// Streaming messages are rescanned as they grow — signatures keep each
+// tool call firing exactly once, even across format changes.
+const sentSigs = new Set();
+function sendTool(tool) {
+  if (!tool) return;
+  const sig = JSON.stringify(tool);
+  if (sentSigs.has(sig)) return;
+  sentSigs.add(sig);
+  if (sentSigs.size > 200) sentSigs.delete(sentSigs.values().next().value);
+  chrome.runtime.sendMessage({ type: "tool", tool }).catch(() => {});
+}
+
 let lastScanned = "";
 const scan = () => {
   const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
@@ -129,11 +237,14 @@ const scan = () => {
   const text = last.textContent;
   if (text === lastScanned) return;
   lastScanned = text;
-  for (const line of text.split("\n")) {
-    const tool = parseToolLine(line.trim());
-    if (tool) {
-      chrome.runtime.sendMessage({ type: "tool", tool }).catch(() => {});
-    }
+
+  // 1) Structured acb JSON blocks first (multi-line safe).
+  const { tools, rest } = extractAcbTools(text);
+  for (const tool of tools) sendTool(tool);
+
+  // 2) Bare-line fallback over everything outside those objects.
+  for (const line of rest.split("\n")) {
+    sendTool(parseToolLine(line.trim()));
   }
 };
 
