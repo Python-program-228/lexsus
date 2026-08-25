@@ -178,7 +178,7 @@ cmd /c "call ""C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC
 
 | Remaining | What it involves |
 |-----------|------------------|
-| **M1 gate** | Live end-to-end run with a real web AI session (manual script §8) |
+| **M1 gate** | Live end-to-end run with a real web AI session — prep complete: multi-line tool capture shipped (`acb` fenced JSON blocks + streaming-safe dedupe in both content scripts), Windows runbook written (`ongoing/windows-prototype-runbook.md`). Remaining work is the live smoke itself on a Windows machine. |
 | **Exit gate** | 5–10 real developers continue a real interrupted task with ChatGPT, metric: successful continuation rate |
 | Hardening (out of Phase 1 scope) | Chrome mixed-content/WS permissions edge cases; extension → Firefox port; WS TLS for non-loopback use |
 
