@@ -62,6 +62,19 @@ export default function HandoffPanel() {
   }
 
   function handoffText(h: Handoff): string {
+    const factBlock = [
+      h.decisions?.length
+        ? `Decisions made:\n${h.decisions.map((d) => `- ${d}`).join("\n")}`
+        : "",
+      h.failed_attempts?.length
+        ? `Failed attempts (do not retry):\n${h.failed_attempts.map((a) => `- ${a}`).join("\n")}`
+        : "",
+      h.constraints?.length
+        ? `Constraints:\n${h.constraints.map((c) => `- ${c}`).join("\n")}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
     return [
       `# Continue this task (AI Continuity Bridge handoff)`,
       ``,
@@ -69,6 +82,7 @@ export default function HandoffPanel() {
       `Progress: ${h.progress_percent}% · Files changed: ${h.files_changed} · Errors remaining: ${h.errors_remaining}`,
       `Next step: ${h.next_step ?? "review state"}`,
       h.files.length > 0 ? `Files involved: ${h.files.join(", ")}` : "",
+      factBlock ? `\n${factBlock}\n` : "",
       ``,
       `You are now the coding agent for the local project at the paired machine.`,
       `You may request file reads, file writes, and command runs; the bridge executes them locally and returns real results.`,
@@ -163,6 +177,44 @@ export default function HandoffPanel() {
                 <p className="mt-1 text-xs leading-relaxed text-foreground/80">
                   {handoff.context}
                 </p>
+              </details>
+            )}
+
+            {((handoff.decisions?.length ?? 0) > 0 ||
+              (handoff.failed_attempts?.length ?? 0) > 0 ||
+              (handoff.constraints?.length ?? 0) > 0) && (
+              <details className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                <summary className="cursor-pointer text-[11px] text-muted-foreground">
+                  extracted facts ({(handoff.decisions?.length ?? 0)} decisions,{" "}
+                  {(handoff.failed_attempts?.length ?? 0)} failed attempts,{" "}
+                  {(handoff.constraints?.length ?? 0)} constraints)
+                </summary>
+                <div className="mt-1 flex flex-col gap-1.5">
+                  {handoff.decisions?.map((d) => (
+                    <p
+                      key={d}
+                      className="text-xs leading-relaxed text-sky-400"
+                    >
+                      • {d}
+                    </p>
+                  ))}
+                  {handoff.failed_attempts?.map((a) => (
+                    <p
+                      key={a}
+                      className="text-xs leading-relaxed text-rose-400"
+                    >
+                      ✗ {a}
+                    </p>
+                  ))}
+                  {handoff.constraints?.map((c) => (
+                    <p
+                      key={c}
+                      className="text-xs leading-relaxed text-amber-400"
+                    >
+                      ⚠ {c}
+                    </p>
+                  ))}
+                </div>
               </details>
             )}
 

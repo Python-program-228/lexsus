@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 
 /// Schema migrations, versioned. Each entry applies in order and is
@@ -134,6 +134,22 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
 
         CREATE INDEX IF NOT EXISTS idx_failover_log_ts
             ON failover_log(ts);
+        "#,
+    ),
+    (
+        "0005_session_archive_v2",
+        r#"
+        ALTER TABLE sessions ADD COLUMN source TEXT;
+        ALTER TABLE sessions ADD COLUMN cwd TEXT;
+        ALTER TABLE sessions ADD COLUMN source_mtime INTEGER;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_source
+            ON sessions(source) WHERE source IS NOT NULL;
+
+        ALTER TABLE session_events ADD COLUMN ts_ms INTEGER NOT NULL DEFAULT 0;
+
+        CREATE INDEX IF NOT EXISTS idx_session_events_ts
+            ON session_events(session_id, ts_ms);
         "#,
     ),
 ];
@@ -368,4 +384,402 @@ pub fn failover_log(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<Fai
         })
     })?;
     rows.collect()
+}
+
+// --- session archive (Layer 1) ------------------------------------------------
+
+/// One archived session (serde: mirrors frontend type).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionSummary {
+    pub id: i64,
+    pub agent: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub objective: Option<String>,
+    pub source: Option<String>,
+    pub events: i64,
+}
+
+/// One archived timeline event.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionEventRow {
+    pub kind: String,
+    pub payload: String,
+    pub ts_ms: i64,
+}
+
+/// A session to insert (the DB fills in id/started_at).
+pub struct NewSession<'a> {
+    pub agent: &'a str,
+    pub source: &'a str,
+    pub cwd: Option<&'a str>,
+    pub objective: Option<&'a str>,
+    /// File mtime (epoch ms) of the archived source — the dedupe key.
+    pub source_mtime: i64,
+}
+
+pub fn find_session_by_source(conn: &Connection, source: &str) -> rusqlite::Result<Option<i64>> {
+    let mut stmt = conn.prepare("SELECT id FROM sessions WHERE source = ?1")?;
+    let mut rows = stmt.query([source])?;
+    Ok(match rows.next()? {
+        Some(row) => Some(row.get(0)?),
+        None => None,
+    })
+}
+
+/// Insert a session row, or refresh the existing one for the same source
+/// file. The precise timeline lives in `session_events.ts_ms`; the row's
+/// own timestamps stay as archive-time defaults.
+pub fn upsert_session(conn: &Connection, s: &NewSession<'_>) -> rusqlite::Result<i64> {
+    if let Some(id) = find_session_by_source(conn, s.source)? {
+        conn.execute(
+            "UPDATE sessions
+             SET agent = ?2, objective = ?3, cwd = ?4, source_mtime = ?5
+             WHERE id = ?1",
+            rusqlite::params![id, s.agent, s.objective, s.cwd, s.source_mtime],
+        )?;
+        Ok(id)
+    } else {
+        conn.execute(
+            "INSERT INTO sessions (agent, objective, source, cwd, source_mtime)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![s.agent, s.objective, s.source, s.cwd, s.source_mtime],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+}
+
+/// Replace all events for a session with a fresh parse of its source.
+pub fn replace_session_events(
+    conn: &Connection,
+    session_id: i64,
+    events: &[SessionEventRow],
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM session_events WHERE session_id = ?1",
+        [session_id],
+    )?;
+    for e in events {
+        conn.execute(
+            "INSERT INTO session_events (session_id, kind, payload, ts_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![session_id, e.kind, e.payload, e.ts_ms],
+        )?;
+    }
+    Ok(events.len())
+}
+
+pub fn list_sessions(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<SessionSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.agent, s.started_at, s.ended_at, s.objective, s.source,
+                (SELECT COUNT(*) FROM session_events e WHERE e.session_id = s.id) AS events
+         FROM sessions s
+         WHERE s.source IS NOT NULL
+         ORDER BY s.id DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit as i64], |row| {
+        Ok(SessionSummary {
+            id: row.get(0)?,
+            agent: row.get(1)?,
+            started_at: row.get(2)?,
+            ended_at: row.get(3)?,
+            objective: row.get(4)?,
+            source: row.get(5)?,
+            events: row.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn newest_session_id(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM sessions WHERE source IS NOT NULL ORDER BY id DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+pub fn session_events_for(
+    conn: &Connection,
+    session_id: i64,
+    limit: usize,
+) -> rusqlite::Result<Vec<SessionEventRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT kind, payload, ts_ms FROM session_events
+         WHERE session_id = ?1 ORDER BY ts_ms ASC, id ASC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![session_id, limit as i64], |row| {
+        Ok(SessionEventRow {
+            kind: row.get(0)?,
+            payload: row.get(1)?,
+            ts_ms: row.get(2)?,
+        })
+    })?;
+    rows.collect()
+}
+
+// --- structured project memory (Layer 2) --------------------------------------
+
+/// Facts extracted from a session (serde: mirrors frontend type). This is
+/// the persisted form; `facts::ExtractedFacts` converts into it.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct ProjectFacts {
+    pub objective: Option<String>,
+    pub decisions: Vec<String>,
+    pub failed_attempts: Vec<String>,
+    pub constraints: Vec<String>,
+    pub changed_files: Vec<String>,
+    pub progress_percent: u8,
+}
+
+const FACT_TABLES: &[&str] = &[
+    "objectives",
+    "decisions",
+    "attempts",
+    "constraints",
+    "changed_files",
+    "progress",
+];
+
+/// Persist an extraction for a session, replacing any previous one so
+/// re-extraction stays idempotent.
+pub fn save_facts(conn: &Connection, session_id: i64, f: &ProjectFacts) -> rusqlite::Result<()> {
+    for table in FACT_TABLES {
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE session_id = ?1"),
+            [session_id],
+        )?;
+    }
+    if let Some(text) = f.objective.as_deref().filter(|t| !t.is_empty()) {
+        conn.execute(
+            "INSERT INTO objectives (session_id, text, active) VALUES (?1, ?2, 1)",
+            (session_id, text),
+        )?;
+    }
+    for d in &f.decisions {
+        conn.execute(
+            "INSERT INTO decisions (session_id, summary) VALUES (?1, ?2)",
+            (session_id, d),
+        )?;
+    }
+    for a in &f.failed_attempts {
+        conn.execute(
+            "INSERT INTO attempts (session_id, description, succeeded) VALUES (?1, ?2, 0)",
+            (session_id, a),
+        )?;
+    }
+    for c in &f.constraints {
+        conn.execute(
+            "INSERT INTO constraints (session_id, text) VALUES (?1, ?2)",
+            (session_id, c),
+        )?;
+    }
+    for p in &f.changed_files {
+        conn.execute(
+            "INSERT INTO changed_files (session_id, path, change_kind) VALUES (?1, ?2, 'write')",
+            (session_id, p),
+        )?;
+    }
+    conn.execute(
+        "INSERT INTO progress (session_id, percent, note) VALUES (?1, ?2, 'heuristic')",
+        rusqlite::params![session_id, f.progress_percent],
+    )?;
+    Ok(())
+}
+
+/// Read back persisted facts for a session (defaults when none saved).
+pub fn get_facts(conn: &Connection, session_id: i64) -> rusqlite::Result<ProjectFacts> {
+    let objective = conn
+        .query_row(
+            "SELECT text FROM objectives WHERE session_id = ?1 AND active = 1
+             ORDER BY id DESC LIMIT 1",
+            [session_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let progress_percent = conn
+        .query_row(
+            "SELECT percent FROM progress WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+            [session_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|v| v.clamp(0, 100) as u8)
+        .unwrap_or(0);
+    Ok(ProjectFacts {
+        objective,
+        decisions: fact_column(conn, session_id, "decisions", "summary", 12)?,
+        failed_attempts: fact_column_where(
+            conn,
+            session_id,
+            "attempts",
+            "description",
+            "succeeded = 0",
+            8,
+        )?,
+        constraints: fact_column(conn, session_id, "constraints", "text", 8)?,
+        changed_files: fact_column_where(
+            conn,
+            session_id,
+            "changed_files",
+            "DISTINCT path",
+            "change_kind = 'write'",
+            30,
+        )?,
+        progress_percent,
+    })
+}
+
+fn fact_column(
+    conn: &Connection,
+    session_id: i64,
+    table: &str,
+    column: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<String>> {
+    fact_column_where(conn, session_id, table, column, "1 = 1", limit)
+}
+
+fn fact_column_where(
+    conn: &Connection,
+    session_id: i64,
+    table: &str,
+    select_expr: &str,
+    cond: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<String>> {
+    // Table/column names come from call sites above, never from user input.
+    let sql = format!(
+        "SELECT {select_expr} FROM {table} WHERE session_id = ?1 AND {cond} ORDER BY id LIMIT {limit}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([session_id], |row| row.get(0))?;
+    rows.collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::facts::ExtractedFacts;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        for (_, sql) in MIGRATIONS {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn upsert_session_dedupes_by_source_and_replaces_events() {
+        let conn = mem();
+        let id = upsert_session(
+            &conn,
+            &NewSession {
+                agent: "claude",
+                source: "/t/s1.jsonl",
+                cwd: Some("/work/app"),
+                objective: Some("ship auth"),
+                source_mtime: 100,
+            },
+        )
+        .unwrap();
+        let again = upsert_session(
+            &conn,
+            &NewSession {
+                agent: "claude",
+                source: "/t/s1.jsonl",
+                cwd: Some("/work/app"),
+                objective: None,
+                source_mtime: 200,
+            },
+        )
+        .unwrap();
+        assert_eq!(id, again);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        replace_session_events(
+            &conn,
+            id,
+            &[
+                SessionEventRow {
+                    kind: "user".into(),
+                    payload: "hello".into(),
+                    ts_ms: 1,
+                },
+                SessionEventRow {
+                    kind: "tool".into(),
+                    payload: "Read src/a.rs".into(),
+                    ts_ms: 2,
+                },
+            ],
+        )
+        .unwrap();
+        // Re-replace shrinks, never duplicates.
+        replace_session_events(
+            &conn,
+            id,
+            &[SessionEventRow {
+                kind: "error".into(),
+                payload: "boom".into(),
+                ts_ms: 3,
+            }],
+        )
+        .unwrap();
+        let events = session_events_for(&conn, id, 50).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "error");
+
+        let sessions = list_sessions(&conn, 10).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].events, 1);
+        assert!(newest_session_id(&conn).unwrap().is_some());
+    }
+
+    #[test]
+    fn facts_roundtrip_is_idempotent() {
+        let conn = mem();
+        let id = upsert_session(
+            &conn,
+            &NewSession {
+                agent: "claude",
+                source: "/t/s2.jsonl",
+                cwd: None,
+                objective: None,
+                source_mtime: 1,
+            },
+        )
+        .unwrap();
+        let f = ExtractedFacts {
+            objective: Some("implement auth".into()),
+            decisions: vec!["use argon2 for hashing".into()],
+            failed_attempts: vec!["bcrypt build failed on musl".into()],
+            constraints: vec!["must not touch the payments module".into()],
+            changed_files: vec!["src/auth.rs".into()],
+            progress_percent: 55,
+        };
+        save_facts(&conn, id, &f.clone().into()).unwrap();
+        save_facts(&conn, id, &f.into()).unwrap(); // re-extract replaces
+
+        let got = get_facts(&conn, id).unwrap();
+        assert_eq!(got.objective.as_deref(), Some("implement auth"));
+        assert_eq!(got.decisions, vec!["use argon2 for hashing".to_string()]);
+        assert_eq!(
+            got.failed_attempts,
+            vec!["bcrypt build failed on musl".to_string()]
+        );
+        assert_eq!(
+            got.constraints,
+            vec!["must not touch the payments module".to_string()]
+        );
+        assert_eq!(got.changed_files, vec!["src/auth.rs".to_string()]);
+        assert_eq!(got.progress_percent, 55);
+
+        let empty = get_facts(&conn, 999).unwrap();
+        assert_eq!(empty, ProjectFacts::default());
+    }
 }

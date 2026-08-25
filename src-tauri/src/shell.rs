@@ -6,6 +6,7 @@
 use portable_pty::CommandBuilder;
 #[cfg(not(windows))]
 use std::path::Path;
+#[cfg(windows)]
 use std::path::PathBuf;
 
 /// The shells this app can drive. MVP ships the Windows pair

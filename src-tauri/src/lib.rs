@@ -1,8 +1,12 @@
+pub mod archive;
+
 pub mod bridge;
 
 pub mod db;
 
 pub mod failover;
+
+pub mod facts;
 
 pub mod git;
 
@@ -451,6 +455,12 @@ pub struct Handoff {
     pub files: Vec<String>,
     pub context: Option<String>,
     pub end_reason: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failed_attempts: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<String>,
     pub generated_at: String,
 }
 
@@ -465,6 +475,25 @@ pub(crate) fn build_handoff_impl(state: &AppState) -> Result<Handoff, String> {
         .and_then(transcript::load_for)
         .filter(|t| t.objective.is_some() || t.message_snippet.is_some());
     let conn = state.conn.lock().unwrap();
+
+    // Archive the transcript and refresh extracted facts as a side effect,
+    // so Layer 1/2 memory stays current whenever a handoff is built.
+    let mut session_id = db::newest_session_id(&conn).map_err(|e| e.to_string())?;
+    if let Some(t) = &transcript {
+        if let Ok(id) = archive::persist_context(&conn, t) {
+            session_id = Some(id);
+        }
+    }
+    let mut decisions = Vec::new();
+    let mut failed_attempts = Vec::new();
+    let mut constraints = Vec::new();
+    if let Some(sid) = session_id {
+        if let Ok(f) = db::get_facts(&conn, sid) {
+            decisions = f.decisions;
+            failed_attempts = f.failed_attempts;
+            constraints = f.constraints;
+        }
+    }
     let stats = db::trace_stats(&conn).map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
@@ -509,6 +538,9 @@ pub(crate) fn build_handoff_impl(state: &AppState) -> Result<Handoff, String> {
         files,
         context,
         end_reason,
+        decisions,
+        failed_attempts,
+        constraints,
         generated_at,
     })
 }
@@ -735,6 +767,88 @@ fn failover_log(
     db::failover_log(&state.conn.lock().unwrap(), limit.unwrap_or(20)).map_err(|e| e.to_string())
 }
 
+// --- session archive + project memory (F2/F3) ---------------------------------
+
+/// Snapshot of one session's extracted facts, plus the archive pass that
+/// produced it (mirrors frontend `FactsSnapshot`).
+#[derive(Clone, serde::Serialize)]
+pub struct FactsSnapshot {
+    pub session_id: Option<i64>,
+    pub report: archive::ArchiveReport,
+    pub facts: db::ProjectFacts,
+}
+
+fn projects_dir_or_err() -> Result<PathBuf, String> {
+    transcript::claude_projects_dir().ok_or_else(|| "no ~/.claude/projects directory".into())
+}
+
+fn require_root(state: &AppState) -> Result<PathBuf, String> {
+    state
+        .project_root
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "project root not set".to_string())
+}
+
+/// Mirror this project's Claude Code transcripts into the local SQLite
+/// archive (idempotent — unchanged files are skipped).
+#[tauri::command]
+fn sessions_archive(state: State<'_, AppState>) -> Result<archive::ArchiveReport, String> {
+    let root = require_root(&state)?;
+    let dir = projects_dir_or_err()?;
+    let conn = state.conn.lock().unwrap();
+    let (report, _newest) = archive::archive_project(&conn, &dir, &root)?;
+    Ok(report)
+}
+
+/// Archived sessions for this project (newest first).
+#[tauri::command]
+fn sessions_list(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<db::SessionSummary>, String> {
+    db::list_sessions(&state.conn.lock().unwrap(), limit.unwrap_or(20)).map_err(|e| e.to_string())
+}
+
+/// Timeline events of one archived session.
+#[tauri::command]
+fn session_events_get(
+    state: State<'_, AppState>,
+    session_id: i64,
+    limit: Option<usize>,
+) -> Result<Vec<db::SessionEventRow>, String> {
+    db::session_events_for(
+        &state.conn.lock().unwrap(),
+        session_id,
+        limit.unwrap_or(100),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Archive transcripts, extract structured facts from the newest session,
+/// persist them into project memory, and return the stored view.
+#[tauri::command]
+fn facts_extract(state: State<'_, AppState>) -> Result<FactsSnapshot, String> {
+    let root = require_root(&state)?;
+    let dir = projects_dir_or_err()?;
+    let conn = state.conn.lock().unwrap();
+    let (report, newest) = archive::archive_project(&conn, &dir, &root)?;
+    let session_id = match newest {
+        Some((id, _ctx)) => Some(id),
+        None => db::newest_session_id(&conn).map_err(|e| e.to_string())?,
+    };
+    let facts = match session_id {
+        Some(sid) => db::get_facts(&conn, sid).map_err(|e| e.to_string())?,
+        None => db::ProjectFacts::default(),
+    };
+    Ok(FactsSnapshot {
+        session_id,
+        report,
+        facts,
+    })
+}
+
 // --- app bootstrap -----------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -804,6 +918,10 @@ pub fn run() {
             failover_reset,
             failover_deliver,
             failover_log,
+            sessions_archive,
+            sessions_list,
+            session_events_get,
+            facts_extract,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
