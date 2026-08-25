@@ -19,11 +19,23 @@ pub struct TranscriptContext {
     pub objective: Option<String>,
     pub message_snippet: Option<String>,
     pub files_touched: Vec<String>,
+    /// Files actually written/edited (subset of `files_touched`).
+    pub files_written: Vec<String>,
     pub commands_run: Vec<String>,
     pub errors: usize,
     pub end_reason: Option<String>,
     pub last_updated: u64,
     pub source: Option<String>,
+    /// Coarse event timeline (user / assistant / tool / error / summary).
+    pub events: Vec<TranscriptEvent>,
+}
+
+/// One archived timeline entry extracted from a transcript line.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TranscriptEvent {
+    pub ts_ms: u64,
+    pub kind: String, // user | assistant | tool | error | summary
+    pub payload: String,
 }
 
 /// Cap how much of a transcript we read (very long sessions get huge).
@@ -33,12 +45,20 @@ const MAX_LINE_LEN: usize = 32 * 1024;
 /// Cap collected facts so a giant session doesn't balloon the payload.
 const MAX_FACTS: usize = 30;
 const MAX_SNIPPET_LEN: usize = 600;
+/// Cap archived timeline events per session.
+const MAX_EVENTS: usize = 400;
+/// Max payload length kept for a single timeline event.
+const MAX_EVENT_LEN: usize = 300;
 
 fn projects_dir() -> Option<PathBuf> {
     let home = std::env::var("HOME")
         .ok()
         .or_else(|| std::env::var("USERPROFILE").ok())?;
     Some(PathBuf::from(home).join(".claude").join("projects"))
+}
+
+pub fn claude_projects_dir() -> Option<PathBuf> {
+    projects_dir()
 }
 
 /// Munged directory name Claude Code uses for a project's transcripts
@@ -127,10 +147,23 @@ struct LineFacts {
     user_texts: VecDeque<String>,
     summary_leaves: Vec<(String, String)>, // (subtype, leaf)
     files: Vec<String>,
+    files_written: Vec<String>,
     commands: Vec<String>,
     assistant_text: Option<String>,
     errors: usize,
     stop_reasons: Vec<String>,
+    events: Vec<TranscriptEvent>,
+}
+
+fn push_event(facts: &mut LineFacts, ts_ms: u64, kind: &str, payload: &str) {
+    if facts.events.len() >= MAX_EVENTS || payload.trim().is_empty() {
+        return;
+    }
+    facts.events.push(TranscriptEvent {
+        ts_ms,
+        kind: kind.to_string(),
+        payload: truncate(payload.trim(), MAX_EVENT_LEN),
+    });
 }
 
 /// Parse a transcript file into structured context.
@@ -140,10 +173,12 @@ pub fn parse_transcript(path: &Path) -> Result<TranscriptContext, String> {
         user_texts: VecDeque::new(),
         summary_leaves: Vec::new(),
         files: Vec::new(),
+        files_written: Vec::new(),
         commands: Vec::new(),
         assistant_text: None,
         errors: 0,
         stop_reasons: Vec::new(),
+        events: Vec::new(),
     };
     let reader = std::io::BufReader::new(file);
     let mut read_lines = 0usize;
@@ -156,6 +191,7 @@ pub fn parse_transcript(path: &Path) -> Result<TranscriptContext, String> {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
+        let ts = line_ts(&v);
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match ty {
             "summary" => {
@@ -172,22 +208,25 @@ pub fn parse_transcript(path: &Path) -> Result<TranscriptContext, String> {
                             .unwrap_or("")
                             .to_string();
                         if let Some(text) = text {
-                            facts.summary_leaves.push((subtype, text));
+                            facts.summary_leaves.push((subtype.clone(), text.clone()));
+                            push_event(&mut facts, ts, "summary", &format!("{subtype}: {text}"));
                         }
                     }
                 }
             }
             "user" => {
                 if let Some(text) = extract_user_text(&v) {
-                    facts.user_texts.push_back(text);
+                    facts.user_texts.push_back(text.clone());
                     if facts.user_texts.len() > 3 {
                         facts.user_texts.pop_front();
                     }
+                    push_event(&mut facts, ts, "user", &text);
                 }
             }
             "assistant" => {
                 let (text, tools) = extract_assistant(&v);
                 if let Some(t) = text {
+                    push_event(&mut facts, ts, "assistant", &t);
                     facts.assistant_text = Some(t);
                 }
                 for (name, input) in tools {
@@ -199,11 +238,25 @@ pub fn parse_transcript(path: &Path) -> Result<TranscriptContext, String> {
                                 .and_then(|x| x.as_str())
                             {
                                 push_fact(&mut facts.files, p);
+                                if name != "read" {
+                                    push_fact(&mut facts.files_written, p);
+                                }
+                                push_event(
+                                    &mut facts,
+                                    ts,
+                                    "tool",
+                                    &format!(
+                                        "{} {}",
+                                        if name == "read" { "Read" } else { "Write" },
+                                        p
+                                    ),
+                                );
                             }
                         }
                         "bash" => {
                             if let Some(c) = input.get("command").and_then(|x| x.as_str()) {
                                 push_fact(&mut facts.commands, c);
+                                push_event(&mut facts, ts, "tool", &format!("Bash {c}"));
                             }
                         }
                         _ => {}
@@ -223,9 +276,18 @@ pub fn parse_transcript(path: &Path) -> Result<TranscriptContext, String> {
                 let subtype = v.get("subtype").and_then(|x| x.as_str()).unwrap_or("");
                 if matches!(subtype, "error" | "permission_error" | "auth_error") {
                     facts.errors += 1;
+                    push_event(
+                        &mut facts,
+                        ts,
+                        "error",
+                        &format!("system error ({subtype})"),
+                    );
                 }
             }
-            "error" => facts.errors += 1,
+            "error" => {
+                facts.errors += 1;
+                push_event(&mut facts, ts, "error", "transcript error line");
+            }
             _ => {}
         }
     }
@@ -264,12 +326,77 @@ pub fn parse_transcript(path: &Path) -> Result<TranscriptContext, String> {
         objective,
         message_snippet,
         files_touched: facts.files,
+        files_written: facts.files_written,
         commands_run: facts.commands,
         errors: facts.errors,
         end_reason,
         last_updated,
         source: Some(path.display().to_string()),
+        events: facts.events,
     })
+}
+
+/// Epoch millis from a transcript line's RFC3339 `timestamp` field
+/// (e.g. `2026-08-24T10:00:00.123Z`); 0 when absent/unparseable.
+fn line_ts(v: &serde_json::Value) -> u64 {
+    v.get("timestamp")
+        .and_then(|t| t.as_str())
+        .and_then(epoch_ms_from_rfc3339)
+        .unwrap_or(0)
+}
+
+fn epoch_ms_from_rfc3339(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.len() < 19 {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (h, mi, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    let mut ms: i64 = 0;
+    if b.get(19) == Some(&b'.') {
+        let digits: String = b[20..]
+            .iter()
+            .take_while(|&&c| c.is_ascii_digit())
+            .map(|&c| c as char)
+            .collect();
+        if !digits.is_empty() {
+            ms = format!("{digits:0<3}")
+                .get(..3)
+                .and_then(|t| t.parse().ok())?;
+        }
+    }
+    // Timezone: 'Z' means UTC; ±HH:MM after the time part shifts it.
+    let mut offset_sec: i64 = 0;
+    for (off, &c) in b.iter().enumerate().skip(19) {
+        if c == b'+' || c == b'-' {
+            let oh = s.get(off + 1..off + 3)?.parse::<i64>().ok()?;
+            let om = s
+                .get(off + 4..off + 6)
+                .and_then(|t| t.parse().ok())
+                .unwrap_or(0);
+            offset_sec = if c == b'+' {
+                oh * 3600 + om * 60
+            } else {
+                -(oh * 3600 + om * 60)
+            };
+            break;
+        }
+    }
+    let days = days_from_civil(y, mo, d);
+    let secs = days * 86400 + h * 3600 + mi * 60 + sec - offset_sec;
+    Some((secs.max(0) as u64) * 1000 + ms.max(0) as u64)
+}
+
+/// Days since 1970-01-01 for a civil date (Hinnant's algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
 }
 
 fn extract_user_text(v: &serde_json::Value) -> Option<String> {
@@ -400,7 +527,7 @@ mod tests {
         .unwrap();
         writeln!(
             f,
-            r#"{{"type":"user","message":{{"role":"user","content":"implement the auth flow"}}}}"#
+            r#"{{"type":"user","timestamp":"2026-08-24T10:00:00.000Z","message":{{"role":"user","content":"implement the auth flow"}}}}"#
         )
         .unwrap();
         writeln!(
@@ -415,7 +542,7 @@ mod tests {
         .unwrap();
         writeln!(
             f,
-            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"auth done"}}],"stop_reason":"max_tokens"}}}}"#
+            r#"{{"type":"assistant","timestamp":"2026-08-24T10:05:30.500Z","message":{{"role":"assistant","content":[{{"type":"text","text":"auth done"}}],"stop_reason":"max_tokens"}}}}"#
         )
         .unwrap();
 
@@ -426,10 +553,40 @@ mod tests {
             Some("implement the auth flow")
         );
         assert!(ctx.files_touched.iter().any(|f| f == "src/login.rs"));
+        assert!(ctx.files_written.iter().any(|f| f == "src/login.rs"));
+        assert!(!ctx.files_written.iter().any(|f| f == "src/auth.rs"));
         assert!(ctx.commands_run.iter().any(|c| c == "cargo test"));
         assert!(ctx.errors == 0);
         assert!(ctx.end_reason.as_deref().unwrap().contains("usage limit"));
+
+        // Timeline: user → summary×2 → tools×3 → assistant.
+        assert_eq!(ctx.events.len(), 7);
+        assert_eq!(ctx.events[0].kind, "user");
+        assert_eq!(ctx.events[0].ts_ms, 1_787_565_600_000); // 2026-08-24T10:00Z
+        assert!(ctx.events[4].payload.contains("Write src/login.rs"));
+        let last = ctx.events.last().unwrap();
+        assert_eq!(last.kind, "assistant");
+        assert_eq!(last.ts_ms, 1_787_565_930_500);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn epoch_parser_handles_offsets_and_missing_timezone() {
+        assert_eq!(epoch_ms_from_rfc3339("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            epoch_ms_from_rfc3339("2026-01-02T03:04:05Z"),
+            Some(1_767_323_045_000)
+        );
+        assert_eq!(
+            epoch_ms_from_rfc3339("2026-01-02T03:04:05+02:00"),
+            Some(1_767_315_845_000)
+        );
+        // Tolerant: a missing timezone reads as UTC.
+        assert_eq!(
+            epoch_ms_from_rfc3339("2026-01-02T03:04:05"),
+            Some(1_767_323_045_000)
+        );
+        assert_eq!(epoch_ms_from_rfc3339("garbage"), None);
     }
 
     #[test]

@@ -97,7 +97,49 @@ export interface Handoff {
   files: string[];
   context: string | null;
   end_reason: string | null;
+  decisions?: string[];
+  failed_attempts?: string[];
+  constraints?: string[];
   generated_at: string;
+}
+
+// --- session archive + project memory (F2/F3) --------------------------------
+
+export interface SessionSummary {
+  id: number;
+  agent: string;
+  started_at: string;
+  ended_at: string | null;
+  objective: string | null;
+  source: string | null;
+  events: number;
+}
+
+export interface SessionEvent {
+  kind: string; // user | assistant | tool | error | summary
+  payload: string;
+  ts_ms: number;
+}
+
+export interface ArchiveReport {
+  archived: number;
+  refreshed: number;
+  skipped: number;
+}
+
+export interface ProjectFacts {
+  objective: string | null;
+  decisions: string[];
+  failed_attempts: string[];
+  constraints: string[];
+  changed_files: string[];
+  progress_percent: number;
+}
+
+export interface FactsSnapshot {
+  session_id: number | null;
+  report: ArchiveReport;
+  facts: ProjectFacts;
 }
 
 // --- failover ----------------------------------------------------------------

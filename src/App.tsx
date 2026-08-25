@@ -21,6 +21,7 @@ import BridgePanel from "./components/BridgePanel";
 import FailoverPanel from "./components/FailoverPanel";
 import GitPanel from "./components/GitPanel";
 import HandoffPanel from "./components/HandoffPanel";
+import MemoryPanel from "./components/MemoryPanel";
 import TerminalPane from "./components/TerminalPane";
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
 import { Button } from "./components/ui/button";
@@ -379,6 +380,9 @@ export default function App() {
             </div>
             <div className="col-span-12 lg:col-span-5">
               <ActivityTrace />
+            </div>
+            <div className="col-span-12 lg:col-span-5">
+              <MemoryPanel />
             </div>
             <div className="col-span-12 lg:col-span-7">
               <HandoffPanel />
