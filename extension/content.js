@@ -98,7 +98,15 @@
     return false;
   }
 
-  // ── Tool capture ────────────────────────────────────────────────
+  // ── Tool capture (v2: supports <acb_tool> tags, fenced blocks, function calls) ──
+
+  // Priority 1: <acb_tool>...</acb_tool> tags (highest reliability)
+  const ACB_TAG_RE = /<acb_tool>([\s\S]*?)<\/acb_tool>/gi;
+
+  // Priority 2: Fenced JSON blocks (```acb or ```json)
+  const FENCED_RE = /```(?:acb|json)\s*\n([\s\S]*?)```/gi;
+
+  // Priority 3: Function-call syntax
   const TOOL_RE = [
     { kind: "ReadFile", re: /read_file\s*[(:]\s*["']([^"'\s)]+)/i },
     {
@@ -110,6 +118,7 @@
     { kind: "GitStatus", re: /git_status\b/i },
   ];
 
+  // Priority 4: Inline JSON scanning (fallback)
   const TOOL_KEY_RE = /["'](?:tool|name)["']\s*:/gi;
 
   function balancedObjectAt(text, start) {
@@ -143,36 +152,72 @@
     }
     const raw = String(obj.tool ?? obj.name ?? "");
     const name = raw.toLowerCase().replace(/[\s-]/g, "_");
+    const args = obj.arguments || {};
     switch (name) {
       case "read_file":
-        return typeof obj.path === "string"
-          ? { ReadFile: { path: obj.path } }
+        return typeof (args.path || obj.path) === "string"
+          ? { name: "read_file", arguments: { path: args.path || obj.path } }
           : null;
       case "write_file":
-        return typeof obj.path === "string"
-          ? { WriteFile: { path: obj.path, content: String(obj.content ?? "") } }
+        return typeof (args.path || obj.path) === "string"
+          ? {
+              name: "write_file",
+              arguments: {
+                path: args.path || obj.path,
+                content: String(args.content || obj.content || ""),
+              },
+            }
           : null;
       case "run_command":
-        return typeof obj.command === "string"
-          ? { RunCommand: { command: obj.command } }
+        return typeof (args.command || obj.command) === "string"
+          ? { name: "run_command", arguments: { command: args.command || obj.command } }
           : null;
       case "list_directory":
-        return typeof obj.path === "string"
-          ? { ListDirectory: { path: obj.path } }
+        return typeof (args.path || obj.path) === "string"
+          ? { name: "list_directory", arguments: { path: args.path || obj.path } }
           : null;
       case "git_status":
-        return { GitStatus: null };
+        return { name: "git_status", arguments: {} };
       default:
         return null;
     }
   }
 
+  // Extract tools from <acb_tool> and fenced blocks. Returns extracted
+  // tools plus the text with those blocks blanked out.
   function extractAcbTools(text) {
     const tools = [];
     const blanks = [];
+
+    // Priority 1: <acb_tool> tags
+    ACB_TAG_RE.lastIndex = 0;
+    let m;
+    while ((m = ACB_TAG_RE.exec(text)) !== null) {
+      const tool = parseJsonBlock(m[1]);
+      if (tool) {
+        tools.push(tool);
+        blanks.push([m.index, m.index + m[0].length]);
+      }
+    }
+
+    // Priority 2: Fenced blocks
+    FENCED_RE.lastIndex = 0;
+    while ((m = FENCED_RE.exec(text)) !== null) {
+      // Skip if already captured by <acb_tool>
+      if (blanks.some(([s, e]) => m.index >= s && m.index < e)) continue;
+      const tool = parseJsonBlock(m[1]);
+      if (tool) {
+        tools.push(tool);
+        blanks.push([m.index, m.index + m[0].length]);
+      }
+    }
+
+    // Priority 4: Inline JSON scanning (only if not in a fenced/tagged block)
     TOOL_KEY_RE.lastIndex = 0;
     let k;
     while ((k = TOOL_KEY_RE.exec(text)) !== null) {
+      // Skip if inside a fenced/tagged block
+      if (blanks.some(([s, e]) => k.index >= s && k.index < e)) continue;
       const start = text.lastIndexOf("{", k.index);
       if (start === -1 || k.index - start > 40) continue;
       const objText = balancedObjectAt(text, start);
@@ -184,6 +229,7 @@
         TOOL_KEY_RE.lastIndex = start + objText.length;
       }
     }
+
     let rest = text;
     for (let i = blanks.length - 1; i >= 0; i--) {
       rest =
@@ -200,15 +246,18 @@
       if (!m) continue;
       switch (kind) {
         case "ReadFile":
-          return { ReadFile: { path: m[1] } };
+          return { name: "read_file", arguments: { path: m[1] } };
         case "WriteFile":
-          return { WriteFile: { path: m[1], content: m[2] } };
+          return {
+            name: "write_file",
+            arguments: { path: m[1], content: m[2] },
+          };
         case "RunCommand":
-          return { RunCommand: { command: m[1] } };
+          return { name: "run_command", arguments: { command: m[1] } };
         case "ListDirectory":
-          return { ListDirectory: { path: m[1] } };
+          return { name: "list_directory", arguments: { path: m[1] } };
         case "GitStatus":
-          return { GitStatus: null };
+          return { name: "git_status", arguments: {} };
       }
     }
     return null;
@@ -234,6 +283,7 @@
     lastScanned = text;
     const { tools, rest } = extractAcbTools(text);
     for (const tool of tools) sendTool(tool);
+    // Priority 3: function-call syntax on remaining text
     for (const line of rest.split("\n")) {
       sendTool(parseToolLine(line.trim()));
     }
@@ -294,8 +344,80 @@
 
   function showToolWidget(msg) {
     const root = ensureRoot();
-    const r = msg.result;
 
+    // Handle v2 tool_result format
+    if (msg.type === "tool_result") {
+      const status = msg.status;
+      const result = msg.result || {};
+      const error = msg.error || {};
+      const meta = msg.meta || {};
+
+      if (status === "pending") {
+        // Show tool card with Allow/Deny
+        const toolObj = { name: meta.tool || "tool", arguments: meta };
+        const card = new C.ACBToolCard(toolObj, msg.id);
+        card.onAction((action) => {
+          chrome.runtime.sendMessage({
+            type: "approve",
+            id: msg.id,
+            allow: action === "allow",
+          });
+        });
+        card.mount(root);
+        return;
+      }
+
+      if (status === "denied" || status === "timeout") {
+        // Show error block
+        const resultBlock = new C.ACBResultBlock(
+          { ok: false, output: error.message || status },
+          meta.tool || "tool",
+        );
+        resultBlock.mount(root);
+        return;
+      }
+
+      if (status === "error") {
+        // Show error block
+        const resultBlock = new C.ACBResultBlock(
+          { ok: false, output: error.message || "Unknown error" },
+          meta.tool || "tool",
+        );
+        resultBlock.mount(root);
+        return;
+      }
+
+      // status === "success"
+      if (meta.tool === "run_command") {
+        const terminal = new C.ACBTerminal(
+          meta.command || "command",
+          msg.id,
+        );
+        const output = result.output || "";
+        output.split("\n").forEach((line) => terminal.appendLine(line));
+        terminal.finish(true, meta.duration_ms ? `${meta.duration_ms}ms` : null);
+        terminal.onAction((action) => {
+          if (action === "insert") insertIntoComposer(output);
+        });
+        terminal.mount(root);
+        return;
+      }
+
+      const resultBlock = new C.ACBResultBlock(
+        { ok: true, output: result.output },
+        meta.tool || "tool",
+      );
+      resultBlock.onAction((action) => {
+        if (action === "insert" && result.output) {
+          insertIntoComposer(result.output);
+        }
+      });
+      resultBlock.mount(root);
+      return;
+    }
+
+    // Legacy v1: tool-result format
+    const r = msg.result;
     const toolName = (() => {
       if (msg.tool?.ReadFile) return "read_file";
       if (msg.tool?.WriteFile) return "write_file";
@@ -348,9 +470,23 @@
 
   // ── Message listener ────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg) => {
+    console.log("[ACB content] message received:", msg.type);
     if (msg.type === "handoff" && msg.payload) {
       showHandoffCard(msg.payload);
     }
+    if (msg.type === "handoff-error") {
+      const el = document.createElement("div");
+      el.className = "acb-status-pill";
+      el.setAttribute("data-state", "error");
+      el.innerHTML = `<span class="acb-status-dot" style="background:#dc2626"></span><span class="acb-status-text">Handoff failed: ${C.escapeHtml(msg.error || "unknown error")}</span>`;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 8000);
+    }
+    // v2: tool_result
+    if (msg.type === "tool_result") {
+      showToolWidget(msg);
+    }
+    // v1: tool-result (legacy)
     if (msg.type === "tool-result" && msg.result) {
       showToolWidget(msg);
     }

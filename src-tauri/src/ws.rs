@@ -107,17 +107,6 @@ fn tool_meta(tool: &crate::bridge::Tool) -> serde_json::Value {
     }
 }
 
-/// Convert a v1 Tool enum to v2 flat format: { "tool": "read_file", "arguments": {...} }
-fn tool_to_v2_call(tool: &crate::bridge::Tool) -> serde_json::Value {
-    match tool {
-        crate::bridge::Tool::ReadFile { path } => json!({"tool": "read_file", "arguments": {"path": path}}),
-        crate::bridge::Tool::WriteFile { path, content } => json!({"tool": "write_file", "arguments": {"path": path, "content": content}}),
-        crate::bridge::Tool::RunCommand { command } => json!({"tool": "run_command", "arguments": {"command": command}}),
-        crate::bridge::Tool::ListDirectory { path } => json!({"tool": "list_directory", "arguments": {"path": path}}),
-        crate::bridge::Tool::GitStatus => json!({"tool": "git_status", "arguments": {}}),
-    }
-}
-
 /// Parse a v2 tool_call message into a Tool enum.
 fn parse_tool_call_v2(tool_name: &str, args: &serde_json::Value) -> Result<crate::bridge::Tool, String> {
     match tool_name {
@@ -237,10 +226,6 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                 let tool = match parse_tool_call_v2(tool_name, args) {
                     Ok(t) => t,
                     Err(e) => {
-                        let start = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
                         let mut w = ws.lock().unwrap();
                         let _ = w.send(Message::Text(
                             make_tool_result_v2(
@@ -262,15 +247,15 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                     let result = crate::tool_call(&app, tool.clone(), "web");
                     let meta = tool_meta(&tool);
                     let (status, result_val, error_val) = if result.ok {
-                        ("success", json!({"output": result.output, "bytes": result.output.as_ref().map(|s| s.len())}), None)
+                        ("success".to_string(), json!({"output": result.output, "bytes": result.output.as_ref().map(|s| s.len())}), serde_json::Value::Null)
                     } else if result.pending.is_some() {
-                        ("pending", json!({"summary": result.pending}), None)
+                        ("pending".to_string(), json!({"summary": result.pending}), serde_json::Value::Null)
                     } else {
-                        ("error", None, json!({"code": "EXECUTION_FAILED", "message": result.error.unwrap_or_default()}))
+                        ("error".to_string(), serde_json::Value::Null, json!({"code": "EXECUTION_FAILED", "message": result.error.unwrap_or_default()}))
                     };
                     let mut w = ws.lock().unwrap();
                     let _ = w.send(Message::Text(
-                        make_tool_result_v2(&id, status, result_val, error_val, Some(meta)),
+                        make_tool_result_v2(&id, &status, Some(result_val), Some(error_val), Some(meta)),
                     ));
                 });
             }
@@ -316,21 +301,22 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                         ok: false,
                         output: None,
                         error: Some("unknown approval id".into()),
+                        error_code: None,
                         pending: None,
                     },
                 };
 
                 let meta = None;
                 let (status, result_val, error_val) = if result.ok {
-                    ("success", json!({"output": result.output}), None)
+                    ("success".to_string(), json!({"output": result.output}), serde_json::Value::Null)
                 } else if !allow {
-                    ("denied", None, json!({"code": "DENIED", "message": result.error.unwrap_or_default()}))
+                    ("denied".to_string(), serde_json::Value::Null, json!({"code": "DENIED", "message": result.error.unwrap_or_default()}))
                 } else {
-                    ("error", None, json!({"code": "EXECUTION_FAILED", "message": result.error.unwrap_or_default()}))
+                    ("error".to_string(), serde_json::Value::Null, json!({"code": "EXECUTION_FAILED", "message": result.error.unwrap_or_default()}))
                 };
                 let mut w = ws.lock().unwrap();
                 let _ = w.send(Message::Text(
-                    make_tool_result_v2(id_str, status, result_val, error_val, meta),
+                    make_tool_result_v2(id_str, &status, Some(result_val), Some(error_val), meta),
                 ));
             }
 
@@ -397,6 +383,7 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                         ok: false,
                         output: None,
                         error: Some("unknown approval id".into()),
+                        error_code: None,
                         pending: None,
                     },
                 };

@@ -482,7 +482,7 @@ pub fn execute(
                         names.push(name);
                     }
                 }
-                Err(e) => ToolResult::err_code(
+                Err(e) => return ToolResult::err_code(
                     ErrorCode::ExecutionFailed,
                     format!("{path}: {e}"),
                 ),
