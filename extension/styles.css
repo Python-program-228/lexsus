@@ -49,7 +49,7 @@
   position: fixed;
   z-index: var(--acb-z);
   pointer-events: auto;
-  bottom: 16px;
+  top: 16px;
   right: 24px;
   display: inline-flex;
   align-items: center;
@@ -116,14 +116,14 @@
   position: fixed;
   z-index: var(--acb-z);
   pointer-events: none;
-  bottom: 48px;
+  top: 52px;
   right: 16px;
   display: flex;
-  flex-direction: column-reverse;
+  flex-direction: column;
   align-items: flex-end;
   gap: 6px;
   font-family: var(--acb-font-ui);
-  max-height: calc(100vh - 120px);
+  max-height: calc(100vh - 70px);
   overflow: hidden;
 }
 
@@ -142,15 +142,14 @@
   width: 100%;
   box-shadow: var(--acb-shadow-sm);
   overflow: hidden;
-  transition: max-height 200ms cubic-bezier(0.2, 0, 0, 1),
-              opacity 150ms cubic-bezier(0.2, 0, 0, 1),
-              transform 150ms cubic-bezier(0.2, 0, 0, 1);
+  transition: opacity 200ms cubic-bezier(0.2, 0, 0, 1),
+              transform 200ms cubic-bezier(0.2, 0, 0, 1);
   animation: acb-slide-in 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 /* Collapsed by default */
 .acb-widget[data-expanded="false"] {
-  max-height: 44px;
+  max-height: 56px;
   cursor: pointer;
 }
 
@@ -202,10 +201,12 @@
    ================================================================ */
 
 .acb-widget-header {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
+  padding-right: 40px;
   background: var(--acb-bg-elevated);
   border-bottom: 1px solid transparent;
   cursor: pointer;
@@ -225,30 +226,33 @@
    ================================================================ */
 
 .acb-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   border: none;
-  background: transparent;
-  color: var(--acb-text-dim);
+  background: rgba(0,0,0,0.4);
+  color: var(--acb-text);
   cursor: pointer;
   flex-shrink: 0;
   transition: background var(--acb-transition), color var(--acb-transition);
   padding: 0;
-  margin-left: auto;
 }
 
 .acb-close:hover {
-  background: var(--acb-bg-elevated);
-  color: var(--acb-text);
+  background: rgba(0,0,0,0.7);
+  color: #fff;
 }
 
 .acb-close svg {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
 }
 
 /* ================================================================
@@ -813,7 +817,7 @@
   }
 
   .acb-status-pill {
-    bottom: 8px;
+    top: 8px;
     right: 8px;
   }
 }

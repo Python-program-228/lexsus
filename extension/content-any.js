@@ -342,6 +342,21 @@
     return root;
   }
 
+  // ── Global close handler (event delegation — always works) ──────
+  document.addEventListener("click", (e) => {
+    const closeBtn = e.target.closest(".acb-close");
+    if (!closeBtn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const widget = closeBtn.closest(".acb-widget");
+    if (widget) {
+      widget.setAttribute("data-state", "dismissed");
+      setTimeout(() => widget.remove(), 200);
+    } else {
+      closeBtn.closest(".acb-status-pill")?.remove();
+    }
+  }, true);
+
   function ensureStatusPill() {
     if (!statusPill && C) {
       statusPill = new C.ACBStatusPill();
