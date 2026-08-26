@@ -1,6 +1,6 @@
 # AI Continuity Bridge
 
-> "Your AI can change. Your work doesn't."
+> "Your AI can change. Your work doesn't."    
 
 A local-first desktop app that connects your local coding work to **web AIs** (ChatGPT, Claude.ai, Gemini). When your local coding agent — like Claude Code — hits its usage limit, crashes, or you simply want to switch, the bridge captures the real state of your work and turns a web AI into a **real coding agent** that can **read your files, write files, and run terminal commands** on your local machine.
 
