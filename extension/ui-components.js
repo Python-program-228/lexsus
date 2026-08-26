@@ -1,6 +1,6 @@
-/* AI Continuity Bridge — UI Component Library v2.0
+/* AI Continuity Bridge — UI Component Library v2.1
    Reusable, lightweight DOM components for the extension.
-   All components return a DOM element; no framework dependencies. */
+   iOS-style stacked notifications with close + expand/collapse. */
 
 (function () {
   "use strict";
@@ -24,6 +24,14 @@
     })[c]);
   }
 
+  const CLOSE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+
+  function createCloseBtn() {
+    const btn = el("button", { class: "acb-close", title: "Dismiss" });
+    btn.innerHTML = CLOSE_SVG;
+    return btn;
+  }
+
   // ── Status Pill ──────────────────────────────────────────────────
   class ACBStatusPill {
     constructor() {
@@ -43,6 +51,9 @@
       this.text.textContent = `Local bridge \u2022 ${label}\u2022 ${this.latency}s`;
       if (state === "connected") this.connectedAt = Date.now();
     }
+    setText(text) {
+      this.text.textContent = text;
+    }
     _updateLatency() {
       this.latency = ((Date.now() - this.connectedAt) / 1000).toFixed(1);
       const state = this.el.getAttribute("data-state");
@@ -61,12 +72,17 @@
     }
   }
 
-  // ── Tool Card ────────────────────────────────────────────────────
+  // ── Tool Card (approval pending) ─────────────────────────────────
   class ACBToolCard {
     constructor(tool, msgId) {
       this.tool = tool;
       this.msgId = msgId;
-      this.el = el("div", { class: "acb-tool-card", "data-state": "pending", "data-tool": this._toolName() });
+      this.el = el("div", {
+        class: "acb-widget acb-tool-card",
+        "data-state": "pending",
+        "data-tool": this._toolName(),
+        "data-expanded": "true",
+      });
       this._build();
     }
     _toolName() {
@@ -106,36 +122,53 @@
       const detail = this._toolDetail();
       const iconHtml = `<span class="acb-tool-badge-icon">${this._toolIcon()}</span>`;
 
-      // Header
-      const header = el("div", { class: "acb-tool-header" });
+      // Header — click to expand/collapse, close button
+      const header = el("div", { class: "acb-widget-header" });
       header.innerHTML = `
         <span class="acb-tool-badge ${name}">${iconHtml}${name}</span>
         <span class="acb-tool-path">${escapeHtml(detail)}</span>
-        <span class="acb-tool-source">Local</span>
       `;
+      this._closeBtn = createCloseBtn();
+      header.appendChild(this._closeBtn);
       this.el.appendChild(header);
 
-      // Preview
+      // Body — preview + actions
+      const body = el("div", { class: "acb-widget-body" });
+
       if (this.tool.WriteFile) {
         const preview = this.tool.WriteFile.content || "";
         const previewEl = el("div", { class: "acb-tool-preview" }, []);
         previewEl.textContent = preview;
-        this.el.appendChild(previewEl);
+        body.appendChild(previewEl);
       } else if (this.tool.RunCommand) {
         const cmdEl = el("div", { class: "acb-tool-preview" });
         cmdEl.innerHTML = `<span style="color:var(--acb-text-dim)">$</span> ${escapeHtml(detail)}`;
-        this.el.appendChild(cmdEl);
+        body.appendChild(cmdEl);
       }
 
-      // Actions
       const actions = el("div", { class: "acb-tool-actions" });
       actions.innerHTML = `
         <button class="acb-btn acb-btn--deny" data-action="deny">Deny</button>
         <button class="acb-btn acb-btn--allow" data-action="allow">Allow</button>
       `;
-      this.el.appendChild(actions);
+      body.appendChild(actions);
+      this.el.appendChild(body);
     }
     onAction(cb) {
+      // Close button
+      this._closeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.el.setAttribute("data-state", "dismissed");
+        setTimeout(() => this.el.remove(), 200);
+        cb("dismiss");
+      });
+      // Expand/collapse on header click (not close button)
+      this.el.querySelector(".acb-widget-header").addEventListener("click", (e) => {
+        if (e.target.closest(".acb-close")) return;
+        const expanded = this.el.getAttribute("data-expanded") === "true";
+        this.el.setAttribute("data-expanded", expanded ? "false" : "true");
+      });
+      // Allow/Deny buttons
       this.el.addEventListener("click", (e) => {
         const btn = e.target.closest("[data-action]");
         if (!btn) return;
@@ -143,7 +176,7 @@
         if (action === "allow") {
           this.el.setAttribute("data-state", "approved");
           setTimeout(() => this.el.remove(), 120);
-        } else {
+        } else if (action === "deny") {
           this.el.setAttribute("data-state", "denied");
           setTimeout(() => this.el.remove(), 100);
         }
@@ -162,8 +195,9 @@
       this.result = result;
       this.toolName = toolName;
       this.el = el("div", {
-        class: "acb-result-block",
+        class: "acb-widget acb-result-block",
         "data-state": result.ok ? "success" : "error",
+        "data-expanded": "false",
       });
       this._build();
     }
@@ -171,30 +205,48 @@
       const ok = this.result.ok;
       const output = this.result.output || this.result.error || "";
 
-      // Header
-      const header = el("div", { class: "acb-result-header" });
+      // Header — click to expand/collapse, close button
+      const header = el("div", { class: "acb-widget-header" });
       const checkSvg = ok
         ? '<svg class="acb-result-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M8 12l2.5 2.5L16 9.5"/></svg>'
         : '<svg class="acb-result-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>';
-      const label = ok ? "Executed locally" : "Execution failed";
+      const label = ok ? "Done" : "Failed";
       header.innerHTML = `${checkSvg}<span>${label}</span><span class="acb-result-meta">${this.toolName}</span>`;
+      this._closeBtn = createCloseBtn();
+      header.appendChild(this._closeBtn);
       this.el.appendChild(header);
 
-      // Content
+      // Body — content + actions
+      const body = el("div", { class: "acb-widget-body" });
+
       const content = el("div", { class: "acb-result-content" });
       const pre = el("pre");
       const code = el("code");
       code.textContent = output;
       pre.appendChild(code);
       content.appendChild(pre);
-      this.el.appendChild(content);
+      body.appendChild(content);
 
-      // Actions
       const actions = el("div", { class: "acb-result-actions" });
       actions.innerHTML = `<button class="acb-btn acb-btn--ghost acb-btn--sm" data-action="insert">Insert into chat</button>`;
-      this.el.appendChild(actions);
+      body.appendChild(actions);
+      this.el.appendChild(body);
     }
     onAction(cb) {
+      // Close button
+      this._closeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.el.setAttribute("data-state", "dismissed");
+        setTimeout(() => this.el.remove(), 200);
+        cb("dismiss");
+      });
+      // Expand/collapse on header click
+      this.el.querySelector(".acb-widget-header").addEventListener("click", (e) => {
+        if (e.target.closest(".acb-close")) return;
+        const expanded = this.el.getAttribute("data-expanded") === "true";
+        this.el.setAttribute("data-expanded", expanded ? "false" : "true");
+      });
+      // Insert button
       this.el.addEventListener("click", (e) => {
         const btn = e.target.closest("[data-action]");
         if (btn) cb(btn.getAttribute("data-action"));
@@ -211,22 +263,34 @@
     constructor(command, msgId) {
       this.command = command;
       this.msgId = msgId;
-      this.el = el("div", { class: "acb-terminal" });
+      this.el = el("div", {
+        class: "acb-widget acb-terminal",
+        "data-expanded": "true",
+      });
       this._build();
     }
     _build() {
-      this.header = el("div", { class: "acb-terminal-header" });
-      this.header.innerHTML = `
+      // Header — click to expand/collapse, close button
+      this.header = el("div", { class: "acb-widget-header" });
+      const headerInner = el("div", { style: "display:flex;align-items:center;gap:8px;flex:1;min-width:0;" });
+      headerInner.innerHTML = `
         <span class="acb-terminal-prompt">$ ${escapeHtml(this.command)}</span>
         <span class="acb-terminal-status running">Running\u2026</span>
       `;
+      this.header.appendChild(headerInner);
+      this._closeBtn = createCloseBtn();
+      this.header.appendChild(this._closeBtn);
       this.el.appendChild(this.header);
 
+      // Body
+      const body = el("div", { class: "acb-widget-body" });
+
       this.output = el("div", { class: "acb-terminal-output" });
-      this.el.appendChild(this.output);
+      body.appendChild(this.output);
 
       this.footer = el("div", { class: "acb-terminal-footer" }, ["Waiting for output\u2026"]);
-      this.el.appendChild(this.footer);
+      body.appendChild(this.footer);
+      this.el.appendChild(body);
     }
     appendLine(text) {
       this.output.textContent += text + "\n";
@@ -239,6 +303,20 @@
       this.footer.textContent = `Exit code: ${ok ? "0" : "1"} \u2022 ${elapsed || "?"}`;
     }
     onAction(cb) {
+      // Close button
+      this._closeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.el.setAttribute("data-state", "dismissed");
+        setTimeout(() => this.el.remove(), 200);
+        cb("dismiss");
+      });
+      // Expand/collapse on header click
+      this.header.addEventListener("click", (e) => {
+        if (e.target.closest(".acb-close")) return;
+        const expanded = this.el.getAttribute("data-expanded") === "true";
+        this.el.setAttribute("data-expanded", expanded ? "false" : "true");
+      });
+      // Insert button
       this.el.addEventListener("click", (e) => {
         const btn = e.target.closest("[data-action]");
         if (btn) cb(btn.getAttribute("data-action"));

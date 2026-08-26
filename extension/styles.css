@@ -1,6 +1,6 @@
-/* AI Continuity Bridge — Design System v2.0
+/* AI Continuity Bridge — Design System v2.1
    Matches ChatGPT / Claude / Cursor dark mode aesthetic.
-   Injected once by content scripts on page load. */
+   iOS-style stacked notifications with expand/collapse. */
 
 :root {
   /* Base palette */
@@ -49,7 +49,7 @@
   position: fixed;
   z-index: var(--acb-z);
   pointer-events: auto;
-  bottom: 80px;
+  bottom: 16px;
   right: 24px;
   display: inline-flex;
   align-items: center;
@@ -109,69 +109,162 @@
 }
 
 /* ================================================================
-   TOOL CARD
+   WIDGET ROOT — iOS-style stacked container
    ================================================================ */
 
 .acb-root {
   position: fixed;
   z-index: var(--acb-z);
   pointer-events: none;
-  left: 0;
-  right: 0;
-  top: 0;
+  bottom: 48px;
+  right: 16px;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   align-items: flex-end;
-  gap: 8px;
-  padding: 16px;
+  gap: 6px;
   font-family: var(--acb-font-ui);
+  max-height: calc(100vh - 120px);
+  overflow: hidden;
 }
 
-.acb-tool-card {
+/* ================================================================
+   WIDGET BASE — shared collapsed/expanded behavior
+   ================================================================ */
+
+.acb-widget {
   pointer-events: auto;
   background: var(--acb-bg);
   border: 1px solid var(--acb-border);
   border-radius: var(--acb-radius);
-  padding: 0;
   color: var(--acb-text);
   font-size: 13px;
-  max-width: 560px;
+  max-width: 400px;
   width: 100%;
-  box-shadow: var(--acb-shadow);
+  box-shadow: var(--acb-shadow-sm);
   overflow: hidden;
+  transition: max-height 200ms cubic-bezier(0.2, 0, 0, 1),
+              opacity 150ms cubic-bezier(0.2, 0, 0, 1),
+              transform 150ms cubic-bezier(0.2, 0, 0, 1);
   animation: acb-slide-in 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-.acb-tool-card[data-state="denied"] {
+/* Collapsed by default */
+.acb-widget[data-expanded="false"] {
+  max-height: 44px;
+  cursor: pointer;
+}
+
+.acb-widget[data-expanded="false"]:hover {
+  background: var(--acb-bg-hover);
+  border-color: var(--acb-border-strong);
+}
+
+/* Expanded */
+.acb-widget[data-expanded="true"] {
+  max-height: 320px;
+  cursor: default;
+}
+
+/* Hidden (beyond max visible) */
+.acb-widget[data-visible="false"] {
+  opacity: 0;
+  transform: scale(0.95) translateY(8px);
+  pointer-events: none;
+  max-height: 0;
+  border-width: 0;
+  margin: 0;
+  padding: 0;
+}
+
+/* Dismiss animation */
+.acb-widget[data-state="dismissed"] {
+  opacity: 0;
+  transform: translateX(60px) scale(0.9);
+  transition: all 200ms cubic-bezier(0.2, 0, 0, 1);
+  pointer-events: none;
+}
+
+/* Approval states */
+.acb-widget[data-state="denied"] {
   opacity: 0;
   transform: translateY(-8px) scale(0.96);
   transition: all 100ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-.acb-tool-card[data-state="approved"] {
+.acb-widget[data-state="approved"] {
   opacity: 0;
   transform: scale(0.96);
   transition: all 80ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-@keyframes acb-slide-in {
-  from {
-    opacity: 0;
-    transform: translateY(-12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
+/* ================================================================
+   WIDGET HEADER — always visible, click to expand/collapse
+   ================================================================ */
 
-.acb-tool-header {
+.acb-widget-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--acb-border);
+  padding: 10px 12px;
   background: var(--acb-bg-elevated);
+  border-bottom: 1px solid transparent;
+  cursor: pointer;
+  user-select: none;
+}
+
+.acb-widget[data-expanded="true"] .acb-widget-header {
+  border-bottom-color: var(--acb-border);
+}
+
+.acb-widget-header:hover {
+  background: var(--acb-bg-hover);
+}
+
+/* ================================================================
+   CLOSE BUTTON — top-right on every widget
+   ================================================================ */
+
+.acb-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--acb-text-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--acb-transition), color var(--acb-transition);
+  padding: 0;
+  margin-left: auto;
+}
+
+.acb-close:hover {
+  background: var(--acb-bg-elevated);
+  color: var(--acb-text);
+}
+
+.acb-close svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* ================================================================
+   TOOL CARD
+   ================================================================ */
+
+.acb-tool-card {
+  border-color: var(--acb-border);
+}
+
+.acb-tool-card[data-state="success"] {
+  border-color: var(--acb-success-border);
+}
+
+.acb-tool-card[data-state="error"] {
+  border-color: var(--acb-error-border);
 }
 
 .acb-tool-badge {
@@ -247,14 +340,30 @@
   flex-shrink: 0;
 }
 
+/* Collapsed state: file type badge at bottom-left */
+.acb-tool-filetype {
+  position: absolute;
+  bottom: 4px;
+  left: 8px;
+  font-family: var(--acb-font-mono);
+  font-size: 9px;
+  color: var(--acb-text-dim);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.acb-widget[data-expanded="false"] {
+  position: relative;
+}
+
 .acb-tool-preview {
   padding: 8px 14px;
   font-family: var(--acb-font-mono);
   font-size: 12px;
   line-height: 1.5;
   color: var(--acb-text-muted);
-  max-height: 60px;
-  overflow: hidden;
+  max-height: 120px;
+  overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -382,17 +491,7 @@
    ================================================================ */
 
 .acb-result-block {
-  pointer-events: auto;
-  background: var(--acb-bg);
-  border: 1px solid var(--acb-border);
-  border-radius: var(--acb-radius);
-  color: var(--acb-text);
-  font-size: 13px;
-  max-width: 560px;
-  width: 100%;
-  box-shadow: var(--acb-shadow);
-  overflow: hidden;
-  animation: acb-fade-in 120ms cubic-bezier(0.2, 0, 0, 1);
+  border-color: var(--acb-border);
 }
 
 .acb-result-block[data-state="success"] {
@@ -403,17 +502,11 @@
   border-color: var(--acb-error-border);
 }
 
-@keyframes acb-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
 .acb-result-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--acb-border);
+  padding: 8px 12px;
   font-size: 12px;
   color: var(--acb-text-muted);
 }
@@ -442,6 +535,8 @@
 .acb-result-content {
   padding: 8px 14px;
   overflow-x: auto;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 .acb-result-content pre {
@@ -467,17 +562,7 @@
    ================================================================ */
 
 .acb-terminal {
-  pointer-events: auto;
-  background: #0d1117;
-  border: 1px solid var(--acb-border);
-  border-radius: var(--acb-radius);
-  font-family: var(--acb-font-mono);
-  font-size: 12px;
-  max-width: 560px;
-  width: 100%;
-  box-shadow: var(--acb-shadow);
-  overflow: hidden;
-  animation: acb-slide-in 150ms cubic-bezier(0.2, 0, 0, 1);
+  border-color: var(--acb-border);
 }
 
 .acb-terminal-header {
@@ -492,6 +577,12 @@
 .acb-terminal-prompt {
   color: #e6edf3;
   font-weight: 500;
+  font-family: var(--acb-font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
 
 .acb-terminal-status {
@@ -499,6 +590,7 @@
   font-size: 10px;
   padding: 1px 6px;
   border-radius: var(--acb-radius-xs);
+  flex-shrink: 0;
 }
 
 .acb-terminal-status.running {
@@ -519,12 +611,14 @@
 
 .acb-terminal-output {
   padding: 10px 12px;
-  max-height: 200px;
+  max-height: 160px;
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
   color: #e6edf3;
   line-height: 1.5;
+  font-family: var(--acb-font-mono);
+  font-size: 12px;
 }
 
 .acb-terminal-footer {
@@ -629,31 +723,78 @@
 }
 
 /* ================================================================
+   STACKED MORE BADGE
+   ================================================================ */
+
+.acb-stack-more {
+  pointer-events: auto;
+  background: var(--acb-bg);
+  border: 1px solid var(--acb-border);
+  border-radius: var(--acb-radius-sm);
+  padding: 4px 12px;
+  font-family: var(--acb-font-ui);
+  font-size: 11px;
+  color: var(--acb-text-dim);
+  text-align: center;
+  cursor: pointer;
+  transition: background var(--acb-transition);
+}
+
+.acb-stack-more:hover {
+  background: var(--acb-bg-hover);
+  color: var(--acb-text-muted);
+}
+
+/* ================================================================
+   ANIMATIONS
+   ================================================================ */
+
+@keyframes acb-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes acb-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ================================================================
    SCROLLBAR
    ================================================================ */
 
 .acb-tool-diff::-webkit-scrollbar,
 .acb-terminal-output::-webkit-scrollbar,
-.acb-result-content::-webkit-scrollbar {
+.acb-result-content::-webkit-scrollbar,
+.acb-tool-preview::-webkit-scrollbar {
   width: 6px;
 }
 
 .acb-tool-diff::-webkit-scrollbar-track,
 .acb-terminal-output::-webkit-scrollbar-track,
-.acb-result-content::-webkit-scrollbar-track {
+.acb-result-content::-webkit-scrollbar-track,
+.acb-tool-preview::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .acb-tool-diff::-webkit-scrollbar-thumb,
 .acb-terminal-output::-webkit-scrollbar-thumb,
-.acb-result-content::-webkit-scrollbar-thumb {
+.acb-result-content::-webkit-scrollbar-thumb,
+.acb-tool-preview::-webkit-scrollbar-thumb {
   background: var(--acb-border);
   border-radius: 3px;
 }
 
 .acb-tool-diff::-webkit-scrollbar-thumb:hover,
 .acb-terminal-output::-webkit-scrollbar-thumb:hover,
-.acb-result-content::-webkit-scrollbar-thumb:hover {
+.acb-result-content::-webkit-scrollbar-thumb:hover,
+.acb-tool-preview::-webkit-scrollbar-thumb:hover {
   background: var(--acb-border-strong);
 }
 
@@ -662,14 +803,17 @@
    ================================================================ */
 
 @media (max-width: 640px) {
-  .acb-tool-card,
-  .acb-result-block,
-  .acb-terminal {
-    max-width: calc(100vw - 32px);
+  .acb-root {
+    right: 8px;
+    max-width: calc(100vw - 16px);
+  }
+
+  .acb-widget {
+    max-width: calc(100vw - 16px);
   }
 
   .acb-status-pill {
-    bottom: 72px;
-    right: 12px;
+    bottom: 8px;
+    right: 8px;
   }
 }

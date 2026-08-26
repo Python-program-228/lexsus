@@ -351,6 +351,37 @@
     return statusPill;
   }
 
+  // ── Stacked widget management (iOS-style) ───────────────────────
+  const MAX_VISIBLE = 3;
+
+  function limitVisibleWidgets() {
+    const r = ensureRoot();
+    const widgets = r.querySelectorAll(".acb-widget");
+    widgets.forEach((w, i) => {
+      if (i < widgets.length - MAX_VISIBLE) {
+        w.setAttribute("data-visible", "false");
+      } else {
+        w.removeAttribute("data-visible");
+      }
+    });
+    const oldBadge = r.querySelector(".acb-stack-more");
+    if (oldBadge) oldBadge.remove();
+    const hidden = r.querySelectorAll('[data-visible="false"]');
+    if (hidden.length > 0) {
+      const badge = document.createElement("div");
+      badge.className = "acb-stack-more";
+      badge.textContent = `+${hidden.length} more`;
+      badge.addEventListener("click", () => {
+        hidden.forEach((w) => {
+          w.setAttribute("data-visible", "true");
+          w.setAttribute("data-expanded", "false");
+        });
+        badge.remove();
+      });
+      r.appendChild(badge);
+    }
+  }
+
   // ── Widget rendering ────────────────────────────────────────────
   const TARGET_LABEL = {
     claudeai: "Continue with Claude.ai",
@@ -396,6 +427,7 @@
           });
         });
         card.mount(root);
+        limitVisibleWidgets();
         return;
       }
 
@@ -405,6 +437,7 @@
           meta.tool || "tool",
         );
         resultBlock.mount(root);
+        limitVisibleWidgets();
         return;
       }
 
@@ -414,6 +447,7 @@
           meta.tool || "tool",
         );
         resultBlock.mount(root);
+        limitVisibleWidgets();
         return;
       }
 
@@ -430,6 +464,7 @@
           if (action === "insert") insertIntoComposer(output);
         });
         terminal.mount(root);
+        limitVisibleWidgets();
         return;
       }
 
@@ -450,6 +485,7 @@
         }
       });
       resultBlock.mount(root);
+      limitVisibleWidgets();
       return;
     }
 
@@ -474,6 +510,7 @@
         });
       });
       card.mount(root);
+      limitVisibleWidgets();
       return;
     }
 
@@ -489,6 +526,7 @@
         if (action === "insert") insertIntoComposer(output);
       });
       terminal.mount(root);
+      limitVisibleWidgets();
       return;
     }
 
@@ -510,6 +548,7 @@
       }
     });
     result.mount(root);
+    limitVisibleWidgets();
   }
 
   // ── Message listener ────────────────────────────────────────────
