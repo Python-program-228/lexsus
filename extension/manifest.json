@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Continuity Bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pairs ChatGPT with the local AI Continuity Bridge desktop app: handoffs in, local tool calls out.",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["ws://127.0.0.1:45241/*"],
@@ -11,12 +11,14 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["content.js"],
+      "js": ["ui-components.js", "content.js"],
+      "css": ["styles.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://claude.ai/*", "https://gemini.google.com/*"],
-      "js": ["content-any.js"],
+      "js": ["ui-components.js", "content-any.js"],
+      "css": ["styles.css"],
       "run_at": "document_idle"
     }
   ],

@@ -3,35 +3,136 @@
   <head>
     <meta charset="utf-8" />
     <style>
-      body { width: 280px; font-family: system-ui, sans-serif; background: #161616; color: #e6e6e6; margin: 0; padding: 12px; }
-      h1 { font-size: 14px; margin: 0 0 8px; }
-      .row { display: flex; gap: 6px; margin-bottom: 8px; }
-      input { flex: 1; min-width: 0; padding: 6px; background: #0d0d0d; color: #e6e6e6; border: 1px solid #444; border-radius: 4px; letter-spacing: 2px; font-family: monospace; }
-      button { padding: 6px 10px; background: #2f6feb; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
-      button.secondary { background: #374151; }
-      button.danger { background: #b91c1c; }
-      #status { font-size: 12px; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
-      .dot { width: 9px; height: 9px; border-radius: 50%; background: #6b7280; display: inline-block; }
-      .dot.on { background: #22c55e; }
-      .hint { font-size: 11px; color: #9a9a9a; margin-top: 8px; }
-      #msg { font-size: 12px; color: #facc15; min-height: 14px; margin: 6px 0; }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        width: 280px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        background: #1f1f1f;
+        color: #ececf1;
+        margin: 0;
+        padding: 16px;
+      }
+      h1 {
+        font-size: 13px;
+        font-weight: 600;
+        margin: 0 0 12px;
+        color: #ececf1;
+        letter-spacing: -0.01em;
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 12px;
+        font-size: 11px;
+        color: #9aa0a6;
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #6e6e80;
+        transition: background 120ms ease;
+      }
+      .dot.on {
+        background: #10a37f;
+        box-shadow: 0 0 6px #10a37f;
+      }
+      .input-row {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      input {
+        flex: 1;
+        min-width: 0;
+        padding: 6px 8px;
+        background: #0d0d0d;
+        color: #ececf1;
+        border: 1px solid #3d3d3d;
+        border-radius: 6px;
+        font-size: 12px;
+        letter-spacing: 2px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        outline: none;
+        transition: border-color 120ms ease;
+      }
+      input:focus {
+        border-color: #10a37f;
+      }
+      button {
+        padding: 6px 12px;
+        background: #10a37f;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 120ms ease, transform 80ms ease;
+      }
+      button:active {
+        transform: scale(0.97);
+      }
+      button:hover {
+        background: #0d8a6b;
+      }
+      button.secondary {
+        background: #2a2a2a;
+        border: 1px solid #3d3d3d;
+        color: #ececf1;
+      }
+      button.secondary:hover {
+        background: #3d3d3d;
+      }
+      button.danger {
+        background: transparent;
+        border: 1px solid #dc2626;
+        color: #dc2626;
+      }
+      button.danger:hover {
+        background: #dc2626;
+        color: #fff;
+      }
+      .action-row {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      .action-row button {
+        flex: 1;
+      }
+      #msg {
+        font-size: 11px;
+        color: #f59e0b;
+        min-height: 14px;
+        margin: 6px 0;
+      }
+      .hint {
+        font-size: 10px;
+        color: #6e6e80;
+        margin-top: 12px;
+        line-height: 1.5;
+      }
     </style>
   </head>
   <body>
     <h1>AI Continuity Bridge</h1>
-    <div id="status"><span class="dot" id="dot"></span><span id="statusText">checking…</span></div>
-    <div class="row">
-      <input id="code" maxlength="6" placeholder="6-digit code from the app" />
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="statusText">checking\u2026</span>
+    </div>
+    <div class="input-row">
+      <input id="code" maxlength="6" placeholder="6-digit code" />
       <button id="pair">Pair</button>
     </div>
-    <div class="row">
-      <button id="handoff" class="secondary" style="flex:1">Send handoff to ChatGPT</button>
+    <div class="action-row">
+      <button id="handoff" class="secondary">Handoff to ChatGPT</button>
       <button id="unpair" class="danger">Unpair</button>
     </div>
     <div id="msg"></div>
     <div class="hint">
-      Open the desktop app → Web-AI Bridge panel → copy the pairing code.
-      Handoffs appear as a card at the top of chatgpt.com.
+      Open the desktop app \u2192 Web-AI Bridge panel \u2192 copy the pairing code. Handoffs appear as a card at the top of chatgpt.com.
     </div>
     <script src="popup.js"></script>
   </body>
