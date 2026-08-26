@@ -43,6 +43,56 @@ pub enum CommandEvent {
     },
 }
 
+/// Structured error code for tool call failures.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ErrorCode {
+    FileNotFound,
+    FileIsBinary,
+    FileTooLarge,
+    PathEscapesRoot,
+    PermissionDenied,
+    SensitivePath,
+    InvalidArguments,
+    MalformedJson,
+    ExecutionFailed,
+    CommandTimeout,
+    ConnectionLost,
+    NotPaired,
+    UnknownTool,
+    InternalError,
+    Denied,
+}
+
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ErrorCode::FileNotFound => write!(f, "FILE_NOT_FOUND"),
+            ErrorCode::FileIsBinary => write!(f, "FILE_IS_BINARY"),
+            ErrorCode::FileTooLarge => write!(f, "FILE_TOO_LARGE"),
+            ErrorCode::PathEscapesRoot => write!(f, "PATH_ESCAPES_ROOT"),
+            ErrorCode::PermissionDenied => write!(f, "PERMISSION_DENIED"),
+            ErrorCode::SensitivePath => write!(f, "SENSITIVE_PATH"),
+            ErrorCode::InvalidArguments => write!(f, "INVALID_ARGUMENTS"),
+            ErrorCode::MalformedJson => write!(f, "MALFORMED_JSON"),
+            ErrorCode::ExecutionFailed => write!(f, "EXECUTION_FAILED"),
+            ErrorCode::CommandTimeout => write!(f, "COMMAND_TIMEOUT"),
+            ErrorCode::ConnectionLost => write!(f, "CONNECTION_LOST"),
+            ErrorCode::NotPaired => write!(f, "NOT_PAIRED"),
+            ErrorCode::UnknownTool => write!(f, "UNKNOWN_TOOL"),
+            ErrorCode::InternalError => write!(f, "INTERNAL_ERROR"),
+            ErrorCode::Denied => write!(f, "DENIED"),
+        }
+    }
+}
+
+/// A structured error response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolError {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
 /// Result of a tool call. `pending` is set when the call awaits an
 /// explicit user approval (the caller should wait for resolution).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +100,7 @@ pub struct ToolResult {
     pub ok: bool,
     pub output: Option<String>,
     pub error: Option<String>,
+    pub error_code: Option<ErrorCode>,
     pub pending: Option<String>,
 }
 
@@ -59,6 +110,7 @@ impl ToolResult {
             ok: true,
             output: Some(output),
             error: None,
+            error_code: None,
             pending: None,
         }
     }
@@ -67,6 +119,16 @@ impl ToolResult {
             ok: false,
             output: None,
             error: Some(error.into()),
+            error_code: None,
+            pending: None,
+        }
+    }
+    pub fn err_code(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            output: None,
+            error: Some(message.into()),
+            error_code: Some(code),
             pending: None,
         }
     }
@@ -75,6 +137,7 @@ impl ToolResult {
             ok: false,
             output: None,
             error: None,
+            error_code: None,
             pending: Some(summary.into()),
         }
     }
@@ -149,7 +212,10 @@ impl Bridge {
         let result = if allow {
             execute(&req.tool, root, on_event)
         } else {
-            ToolResult::err(format!("denied by user: {}", req.summary))
+            ToolResult::err_code(
+                ErrorCode::Denied,
+                format!("denied by user: {}", req.summary),
+            )
         };
 
         if let Some(tx) = self.channels.lock().unwrap().remove(&id) {
@@ -263,55 +329,81 @@ pub fn execute(
     mut on_event: Option<&mut dyn FnMut(CommandEvent)>,
 ) -> ToolResult {
     let Some(root) = root else {
-        return ToolResult::err("project root not set".to_string());
+        return ToolResult::err_code(ErrorCode::InternalError, "project root not set");
     };
 
     match tool {
         Tool::ReadFile { path } => {
             let p = match resolve_path(root, path) {
                 Ok(p) => p,
-                Err(e) => return ToolResult::err(e),
+                Err(e) => {
+                    if e.contains("escapes project root") {
+                        return ToolResult::err_code(ErrorCode::PathEscapesRoot, e);
+                    }
+                    return ToolResult::err_code(ErrorCode::FileNotFound, e);
+                }
             };
             match std::fs::metadata(&p) {
                 Ok(md) if md.is_dir() => {
-                    return ToolResult::err(format!("is a directory: {path}"));
+                    return ToolResult::err_code(
+                        ErrorCode::InvalidArguments,
+                        format!("is a directory: {path}"),
+                    );
                 }
-                Err(e) => return ToolResult::err(format!("{path}: {e}")),
+                Err(e) => {
+                    return ToolResult::err_code(
+                        ErrorCode::FileNotFound,
+                        format!("{path}: {e}"),
+                    );
+                }
                 _ => {}
             }
             match std::fs::read(&p) {
                 Ok(bytes) => {
                     if bytes.contains(&0) {
-                        return ToolResult::ok(format!(
-                            "{}: binary file ({} bytes, not shown)",
-                            path,
-                            bytes.len()
-                        ));
+                        return ToolResult::err_code(
+                            ErrorCode::FileIsBinary,
+                            format!("{}: binary file ({} bytes, not shown)", path, bytes.len()),
+                        );
                     }
                     if bytes.len() as u64 > READ_CAP {
-                        return ToolResult::err(format!(
-                            "{path}: file too large ({})",
-                            bytes.len()
-                        ));
+                        return ToolResult::err_code(
+                            ErrorCode::FileTooLarge,
+                            format!("{path}: file too large ({})", bytes.len()),
+                        );
                     }
                     ToolResult::ok(String::from_utf8_lossy(&bytes).into_owned())
                 }
-                Err(e) => ToolResult::err(format!("{path}: {e}")),
+                Err(e) => ToolResult::err_code(
+                    ErrorCode::ExecutionFailed,
+                    format!("{path}: {e}"),
+                ),
             }
         }
         Tool::WriteFile { path, content } => {
             let p = match resolve_path(root, path) {
                 Ok(p) => p,
-                Err(e) => return ToolResult::err(e),
+                Err(e) => {
+                    if e.contains("escapes project root") {
+                        return ToolResult::err_code(ErrorCode::PathEscapesRoot, e);
+                    }
+                    return ToolResult::err_code(ErrorCode::FileNotFound, e);
+                }
             };
             if let Some(parent) = p.parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
-                    return ToolResult::err(format!("{path}: {e}"));
+                    return ToolResult::err_code(
+                        ErrorCode::ExecutionFailed,
+                        format!("{path}: {e}"),
+                    );
                 }
             }
             match std::fs::write(&p, content.as_bytes()) {
                 Ok(()) => ToolResult::ok(format!("wrote {} bytes to {path}", content.len())),
-                Err(e) => ToolResult::err(format!("{path}: {e}")),
+                Err(e) => ToolResult::err_code(
+                    ErrorCode::ExecutionFailed,
+                    format!("{path}: {e}"),
+                ),
             }
         }
         Tool::RunCommand { command } => {
@@ -345,7 +437,10 @@ pub fn execute(
                             truncated: false,
                         });
                     }
-                    return ToolResult::err(format!("run_command failed: {e}"));
+                    return ToolResult::err_code(
+                        ErrorCode::ExecutionFailed,
+                        format!("run_command failed: {e}"),
+                    );
                 }
             };
             if let Some(cb) = on_event.as_mut() {
@@ -358,6 +453,10 @@ pub fn execute(
             let mut text = out.output;
             if out.timed_out {
                 text.push_str("\n[timed out — process killed]");
+                return ToolResult::err_code(
+                    ErrorCode::CommandTimeout,
+                    text,
+                );
             }
             if out.truncated {
                 text.push_str("\n[output truncated]");
@@ -368,7 +467,12 @@ pub fn execute(
         Tool::ListDirectory { path } => {
             let p = match resolve_path(root, path) {
                 Ok(p) => p,
-                Err(e) => return ToolResult::err(e),
+                Err(e) => {
+                    if e.contains("escapes project root") {
+                        return ToolResult::err_code(ErrorCode::PathEscapesRoot, e);
+                    }
+                    return ToolResult::err_code(ErrorCode::FileNotFound, e);
+                }
             };
             let mut names = Vec::new();
             match std::fs::read_dir(&p) {
@@ -378,7 +482,10 @@ pub fn execute(
                         names.push(name);
                     }
                 }
-                Err(e) => return ToolResult::err(format!("{path}: {e}")),
+                Err(e) => return ToolResult::err_code(
+                    ErrorCode::ExecutionFailed,
+                    format!("{path}: {e}"),
+                ),
             }
             names.sort();
             let mut out = format!("[{} entries]\n", names.len());
@@ -388,11 +495,21 @@ pub fn execute(
         Tool::GitStatus => {
             let repo = match git::open_repo(root) {
                 Ok(r) => r,
-                Err(e) => return ToolResult::err(format!("not a git repo: {e}")),
+                Err(e) => {
+                    return ToolResult::err_code(
+                        ErrorCode::ExecutionFailed,
+                        format!("not a git repo: {e}"),
+                    );
+                }
             };
             let statuses = match git::status(&repo) {
                 Ok(s) => s,
-                Err(e) => return ToolResult::err(format!("git status: {e}")),
+                Err(e) => {
+                    return ToolResult::err_code(
+                        ErrorCode::ExecutionFailed,
+                        format!("git status: {e}"),
+                    );
+                }
             };
             if statuses.is_empty() {
                 return ToolResult::ok("working tree clean".to_string());

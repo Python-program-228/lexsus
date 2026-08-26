@@ -1,10 +1,10 @@
-// AI Continuity Bridge — content script for claude.ai and
-// gemini.google.com. Handles the Phase 3 web→web failover: renders the
-// handoff card, auto-continues when the app asks (auto:true), captures
-// the web AI's tool lines, and inserts real tool results back into the
-// chat. Best-effort per-site DOM wiring with generic fallbacks.
+// AI Continuity Bridge — content script v2.0 for claude.ai and gemini.google.com.
+// Premium dark-mode UI: status pill, tool cards, result blocks, terminal.
+// Shared component library with content.js (chatgpt.com).
 
 (() => {
+  "use strict";
+
   const host = (() => {
     const h = location.hostname;
     if (h.includes("claude.ai")) return "claudeai";
@@ -12,6 +12,11 @@
     return "other";
   })();
 
+  // ui-components.js and styles.css are injected automatically by the
+  // manifest's content_scripts declaration (runs before this script).
+  const C = window.ACBComponents;
+
+  // ── DOM selectors per host ──────────────────────────────────────
   const COMPS = {
     claudeai: 'div[contenteditable="true"]',
     gemini: 'div.ql-editor[contenteditable="true"], rich-textarea div[contenteditable="true"], div[contenteditable="true"]',
@@ -25,12 +30,13 @@
     gemini: "model-response .markdown-content, .model-response-text, .markdown-content",
   };
 
+  // ── Handoff prompt ──────────────────────────────────────────────
   const HANDOFF_PROMPT = (h) =>
     [
       `# Continue this task (AI Continuity Bridge handoff)`,
       ``,
       `Objective: ${h.objective}`,
-      `Progress: ${h.progress_percent}% · Files changed: ${h.files_changed} · Errors remaining: ${h.errors_remaining}`,
+      `Progress: ${h.progress_percent}% \u00b7 Files changed: ${h.files_changed} \u00b7 Errors remaining: ${h.errors_remaining}`,
       `Next step: ${h.next_step ?? "review the project state"}`,
       h.files && h.files.length > 0 ? `Files involved: ${h.files.join(", ")}` : "",
       h.context ? `Task context so far: ${h.context}` : "",
@@ -43,7 +49,7 @@
       `list_directory("path")`,
       `git_status`,
       ``,
-      `For write_file — and ANY tool whose argument spans multiple lines — you MUST instead emit an acb block containing one JSON object:`,
+      `For write_file \u2014 and ANY tool whose argument spans multiple lines \u2014 you MUST instead emit an acb block containing one JSON object:`,
       '```acb',
       '{"tool":"write_file","path":"src/example.ts","content":"<entire new file content>"}',
       '```',
@@ -53,6 +59,27 @@
       .filter(Boolean)
       .join("\n");
 
+  // ── Auto-insert & toast ─────────────────────────────────────────
+  const AUTO_INSERT_TOOLS = new Set(["read_file", "list_directory", "git_status"]);
+
+  function showToast(text) {
+    const t = document.createElement("div");
+    t.className = "acb-status-pill";
+    t.setAttribute("data-state", "connected");
+    t.innerHTML = `<span class="acb-status-dot" style="background:#10a37f"></span><span class="acb-status-text">${C.escapeHtml(text)}</span>`;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 2000);
+  }
+
+  // ── Tool capture (v2: supports <acb_tool> tags, fenced blocks, function calls) ──
+
+  // Priority 1: <acb_tool>...</acb_tool> tags (highest reliability)
+  const ACB_TAG_RE = /<acb_tool>([\s\S]*?)<\/acb_tool>/gi;
+
+  // Priority 2: Fenced JSON blocks (```acb or ```json)
+  const FENCED_RE = /```(?:acb|json)\s*\n([\s\S]*?)```/gi;
+
+  // Priority 3: Function-call syntax
   const TOOL_RE = [
     { kind: "ReadFile", re: /read_file\s*[(:]\s*["']([^"'\s)]+)/i },
     {
@@ -64,11 +91,7 @@
     { kind: "GitStatus", re: /git_status\b/i },
   ];
 
-  // Fenced acb blocks: ```acb\n{"tool":"write_file","path":"...","content":"..."}\n```
-  // Chat UIs render fences as styled <pre> elements, so the literal ```
-  // never reaches textContent — instead we scan for JSON objects carrying
-  // a "tool"/"name" key and pull each one out with a string-aware,
-  // balanced-brace matcher (multi-line content safe).
+  // Priority 4: Inline JSON scanning (fallback)
   const TOOL_KEY_RE = /["'](?:tool|name)["']\s*:/gi;
 
   function balancedObjectAt(text, start) {
@@ -90,7 +113,7 @@
         if (depth === 0) return text.slice(start, i + 1);
       }
     }
-    return null; // still streaming — retried on the next scan pass
+    return null;
   }
 
   function parseJsonBlock(body) {
@@ -102,39 +125,72 @@
     }
     const raw = String(obj.tool ?? obj.name ?? "");
     const name = raw.toLowerCase().replace(/[\s-]/g, "_");
+    const args = obj.arguments || {};
     switch (name) {
       case "read_file":
-        return typeof obj.path === "string"
-          ? { ReadFile: { path: obj.path } }
+        return typeof (args.path || obj.path) === "string"
+          ? { name: "read_file", arguments: { path: args.path || obj.path } }
           : null;
       case "write_file":
-        return typeof obj.path === "string"
-          ? { WriteFile: { path: obj.path, content: String(obj.content ?? "") } }
+        return typeof (args.path || obj.path) === "string"
+          ? {
+              name: "write_file",
+              arguments: {
+                path: args.path || obj.path,
+                content: String(args.content || obj.content || ""),
+              },
+            }
           : null;
       case "run_command":
-        return typeof obj.command === "string"
-          ? { RunCommand: { command: obj.command } }
+        return typeof (args.command || obj.command) === "string"
+          ? { name: "run_command", arguments: { command: args.command || obj.command } }
           : null;
       case "list_directory":
-        return typeof obj.path === "string"
-          ? { ListDirectory: { path: obj.path } }
+        return typeof (args.path || obj.path) === "string"
+          ? { name: "list_directory", arguments: { path: args.path || obj.path } }
           : null;
       case "git_status":
-        return { GitStatus: null };
+        return { name: "git_status", arguments: {} };
       default:
         return null;
     }
   }
 
-  // Extract acb tool objects from free text. Returns the tools plus the
-  // text with those objects blanked out (so the line scanner can't
-  // double-capture their contents).
+  // Extract tools from <acb_tool> and fenced blocks. Returns extracted
+  // tools plus the text with those blocks blanked out.
   function extractAcbTools(text) {
     const tools = [];
     const blanks = [];
+
+    // Priority 1: <acb_tool> tags
+    ACB_TAG_RE.lastIndex = 0;
+    let m;
+    while ((m = ACB_TAG_RE.exec(text)) !== null) {
+      const tool = parseJsonBlock(m[1]);
+      if (tool) {
+        tools.push(tool);
+        blanks.push([m.index, m.index + m[0].length]);
+      }
+    }
+
+    // Priority 2: Fenced blocks
+    FENCED_RE.lastIndex = 0;
+    while ((m = FENCED_RE.exec(text)) !== null) {
+      // Skip if already captured by <acb_tool>
+      if (blanks.some(([s, e]) => m.index >= s && m.index < e)) continue;
+      const tool = parseJsonBlock(m[1]);
+      if (tool) {
+        tools.push(tool);
+        blanks.push([m.index, m.index + m[0].length]);
+      }
+    }
+
+    // Priority 4: Inline JSON scanning (only if not in a fenced/tagged block)
     TOOL_KEY_RE.lastIndex = 0;
     let k;
     while ((k = TOOL_KEY_RE.exec(text)) !== null) {
+      // Skip if inside a fenced/tagged block
+      if (blanks.some(([s, e]) => k.index >= s && k.index < e)) continue;
       const start = text.lastIndexOf("{", k.index);
       if (start === -1 || k.index - start > 40) continue;
       const objText = balancedObjectAt(text, start);
@@ -146,6 +202,7 @@
         TOOL_KEY_RE.lastIndex = start + objText.length;
       }
     }
+
     let rest = text;
     for (let i = blanks.length - 1; i >= 0; i--) {
       rest =
@@ -162,20 +219,24 @@
       if (!m) continue;
       switch (kind) {
         case "ReadFile":
-          return { ReadFile: { path: m[1] } };
+          return { name: "read_file", arguments: { path: m[1] } };
         case "WriteFile":
-          return { WriteFile: { path: m[1], content: m[2] } };
+          return {
+            name: "write_file",
+            arguments: { path: m[1], content: m[2] },
+          };
         case "RunCommand":
-          return { RunCommand: { command: m[1] } };
+          return { name: "run_command", arguments: { command: m[1] } };
         case "ListDirectory":
-          return { ListDirectory: { path: m[1] } };
+          return { name: "list_directory", arguments: { path: m[1] } };
         case "GitStatus":
-          return { GitStatus: null };
+          return { name: "git_status", arguments: {} };
       }
     }
     return null;
   }
 
+  // ── Composer helpers ────────────────────────────────────────────
   function findComposer() {
     const sel = COMPS[host] || "div[contenteditable='true']";
     return (
@@ -232,116 +293,7 @@
     return false;
   }
 
-  function ensureRoot() {
-    let root = document.getElementById("acb-root");
-    if (!root) {
-      root = document.createElement("div");
-      root.id = "acb-root";
-      root.style.cssText = `
-        position: fixed; z-index: 2147483647; font-family: system-ui, sans-serif;
-        left: 16px; right: 16px; top: 16px; display: flex; flex-direction: column; gap: 8px;
-        pointer-events: none;
-      `;
-      document.body.appendChild(root);
-    }
-    return root;
-  }
-
-  function card(html) {
-    const el = document.createElement("div");
-    el.style.cssText = `
-      pointer-events: auto; background: #0d0d0d; border: 1px solid #333;
-      border-radius: 10px; padding: 10px 12px; color: #e6e6e6; font-size: 13px;
-      box-shadow: 0 8px 24px rgba(0,0,0,.5); max-width: 640px;
-    `;
-    el.innerHTML = html;
-    return el;
-  }
-
-  const TARGET_LABEL = {
-    claudeai: "Continue with Claude.ai",
-    gemini: "Continue with Gemini",
-    chatgpt: "Continue with ChatGPT",
-  };
-
-  function showHandoffCard(h) {
-    const root = ensureRoot();
-    const label = TARGET_LABEL[h.target] || TARGET_LABEL.chatgpt;
-    const el = card(`
-      <div style="font-weight:700;margin-bottom:6px;">Bridge handoff ready</div>
-      <div style="color:#9a9a9a;margin-bottom:4px;">${h.objective}</div>
-      <div style="margin-bottom:8px;">
-        <b style="color:#4ade80;">${h.progress_percent}%</b> progress ·
-        <b>${h.files_changed}</b> files changed ·
-        <b style="color:#f87171;">${h.errors_remaining}</b> errors remaining
-        ${h.next_step ? `<div style="color:#93c5fd;margin-top:4px;">next: ${h.next_step}</div>` : ""}
-      </div>
-      <button id="acb-continue" style="background:#2f6feb;color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;">
-        ${label}
-      </button>
-    `);
-    const go = () => {
-      const inserted = insertIntoComposer(HANDOFF_PROMPT(h));
-      if (inserted && h.auto) setTimeout(submitComposer, 400);
-      el.remove();
-    };
-    el.querySelector("#acb-continue").addEventListener("click", go);
-    root.appendChild(el);
-    if (h.auto) go();
-  }
-
-  function showToolWidget(msg) {
-    const root = ensureRoot();
-    const r = msg.result;
-    const summary = r.pending
-      ? `⏳ ${r.pending}`
-      : r.ok
-        ? `✅ ${(r.output ?? "").slice(0, 2000)}`
-        : `❌ ${r.error}`;
-    const el = card(`
-      <div style="font-family:monospace;white-space:pre-wrap;word-break:break-all;max-height:200px;overflow:auto;">${escapeHtml(summary)}</div>
-      <div style="margin-top:8px;display:flex;gap:6px;justify-content:flex-end;">
-        ${r.pending
-          ? `<button id="acb-allow" style="background:#059669;color:#fff;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;">Allow</button>
-             <button id="acb-deny" style="background:#b91c1c;color:#fff;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;">Deny</button>`
-          : `<button id="acb-insert" style="background:#2f6feb;color:#fff;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;">Insert result into chat</button>`}
-      </div>
-    `);
-    const allow = el.querySelector("#acb-allow");
-    if (allow)
-      allow.addEventListener("click", () => {
-        chrome.runtime.sendMessage({ type: "approve", id: msg.id, allow: true });
-        el.remove();
-      });
-    const deny = el.querySelector("#acb-deny");
-    if (deny)
-      deny.addEventListener("click", () => {
-        chrome.runtime.sendMessage({ type: "approve", id: msg.id, allow: false });
-        el.remove();
-      });
-    const insert = el.querySelector("#acb-insert");
-    if (insert)
-      insert.addEventListener("click", () => {
-        insertIntoComposer((r.ok ? r.output : r.error) ?? "");
-        el.remove();
-      });
-    root.appendChild(el);
-  }
-
-  function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    })[c]);
-  }
-
-  // --- tool capture (best-effort) --------------------------------------------
-
-  // Streaming messages are rescanned as they grow — signatures keep each
-  // tool call firing exactly once, even across format changes.
+  // ── Scanning ────────────────────────────────────────────────────
   const sentSigs = new Set();
   function sendTool(tool) {
     if (!tool) return;
@@ -363,12 +315,8 @@
     if (source == null) source = document.body ? document.body.innerText.slice(-8000) : "";
     if (source === lastScanned) return;
     lastScanned = source;
-
-    // 1) Structured acb JSON blocks first (multi-line safe).
     const { tools, rest } = extractAcbTools(source);
     for (const tool of tools) sendTool(tool);
-
-    // 2) Bare-line fallback over everything outside those objects.
     for (const line of rest.split("\n")) {
       sendTool(parseToolLine(line.trim()));
     }
@@ -380,10 +328,264 @@
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
-  // --- messages from the app -------------------------------------------------
+  // ── Root + status ───────────────────────────────────────────────
+  let root = null;
+  let statusPill = null;
 
+  function ensureRoot() {
+    if (!root) {
+      root = document.createElement("div");
+      root.id = "acb-root";
+      root.className = "acb-root";
+      document.body.appendChild(root);
+    }
+    return root;
+  }
+
+  // ── Global close handler (event delegation — always works) ──────
+  document.addEventListener("click", (e) => {
+    const closeBtn = e.target.closest(".acb-close");
+    if (!closeBtn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const widget = closeBtn.closest(".acb-widget");
+    if (widget) {
+      widget.setAttribute("data-state", "dismissed");
+      setTimeout(() => widget.remove(), 200);
+    } else {
+      closeBtn.closest(".acb-status-pill")?.remove();
+    }
+  }, true);
+
+  function ensureStatusPill() {
+    if (!statusPill && C) {
+      statusPill = new C.ACBStatusPill();
+      statusPill.mount(document.body);
+      statusPill.setState("connecting");
+    }
+    return statusPill;
+  }
+
+  // ── Stacked widget management (iOS-style) ───────────────────────
+  const MAX_VISIBLE = 3;
+
+  function limitVisibleWidgets() {
+    const r = ensureRoot();
+    const widgets = r.querySelectorAll(".acb-widget");
+    widgets.forEach((w, i) => {
+      if (i < widgets.length - MAX_VISIBLE) {
+        w.setAttribute("data-visible", "false");
+      } else {
+        w.removeAttribute("data-visible");
+      }
+    });
+    const oldBadge = r.querySelector(".acb-stack-more");
+    if (oldBadge) oldBadge.remove();
+    const hidden = r.querySelectorAll('[data-visible="false"]');
+    if (hidden.length > 0) {
+      const badge = document.createElement("div");
+      badge.className = "acb-stack-more";
+      badge.textContent = `+${hidden.length} more`;
+      badge.addEventListener("click", () => {
+        hidden.forEach((w) => {
+          w.setAttribute("data-visible", "true");
+          w.setAttribute("data-expanded", "false");
+        });
+        badge.remove();
+      });
+      r.appendChild(badge);
+    }
+  }
+
+  // ── Widget rendering ────────────────────────────────────────────
+  const TARGET_LABEL = {
+    claudeai: "Continue with Claude.ai",
+    gemini: "Continue with Gemini",
+    chatgpt: "Continue with ChatGPT",
+  };
+
+  function showHandoffCard(h) {
+    const label = TARGET_LABEL[h.target] || TARGET_LABEL.chatgpt;
+    const card = new C.ACBHandoffCard(h, label);
+    card.onAction((action) => {
+      if (action === "continue") {
+        const inserted = insertIntoComposer(HANDOFF_PROMPT(h));
+        if (inserted && h.auto) setTimeout(submitComposer, 400);
+      }
+    });
+    card.mount(document.body);
+    if (h.auto) {
+      const inserted = insertIntoComposer(HANDOFF_PROMPT(h));
+      if (inserted) setTimeout(submitComposer, 400);
+      card.destroy();
+    }
+  }
+
+  function showToolWidget(msg) {
+    const root = ensureRoot();
+
+    // Handle v2 tool_result format
+    if (msg.type === "tool_result") {
+      const status = msg.status;
+      const result = msg.result || {};
+      const error = msg.error || {};
+      const meta = msg.meta || {};
+
+      if (status === "pending") {
+        const toolObj = { name: meta.tool || "tool", arguments: meta };
+        const card = new C.ACBToolCard(toolObj, msg.id);
+        card.onAction((action) => {
+          chrome.runtime.sendMessage({
+            type: "approve",
+            id: msg.id,
+            allow: action === "allow",
+          });
+        });
+        card.mount(root);
+        limitVisibleWidgets();
+        return;
+      }
+
+      if (status === "denied" || status === "timeout") {
+        const resultBlock = new C.ACBResultBlock(
+          { ok: false, output: error.message || status },
+          meta.tool || "tool",
+        );
+        resultBlock.mount(root);
+        limitVisibleWidgets();
+        return;
+      }
+
+      if (status === "error") {
+        const resultBlock = new C.ACBResultBlock(
+          { ok: false, output: error.message || "Unknown error" },
+          meta.tool || "tool",
+        );
+        resultBlock.mount(root);
+        limitVisibleWidgets();
+        return;
+      }
+
+      // status === "success"
+      if (meta.tool === "run_command") {
+        const terminal = new C.ACBTerminal(
+          meta.command || "command",
+          msg.id,
+        );
+        const output = result.output || "";
+        output.split("\n").forEach((line) => terminal.appendLine(line));
+        terminal.finish(true, meta.duration_ms ? `${meta.duration_ms}ms` : null);
+        terminal.onAction((action) => {
+          if (action === "insert") insertIntoComposer(output);
+        });
+        terminal.mount(root);
+        limitVisibleWidgets();
+        return;
+      }
+
+      // Auto-insert read-only tools (read_file, list_directory, git_status)
+      if (AUTO_INSERT_TOOLS.has(meta.tool) && result.output) {
+        insertIntoComposer(result.output);
+        showToast(`${meta.tool} result inserted`);
+        return;
+      }
+
+      const resultBlock = new C.ACBResultBlock(
+        { ok: true, output: result.output },
+        meta.tool || "tool",
+      );
+      resultBlock.onAction((action) => {
+        if (action === "insert" && result.output) {
+          insertIntoComposer(result.output);
+        }
+      });
+      resultBlock.mount(root);
+      limitVisibleWidgets();
+      return;
+    }
+
+    // Legacy v1: tool-result format
+    const r = msg.result;
+    const toolName = (() => {
+      if (msg.tool?.ReadFile) return "read_file";
+      if (msg.tool?.WriteFile) return "write_file";
+      if (msg.tool?.RunCommand) return "run_command";
+      if (msg.tool?.ListDirectory) return "list_directory";
+      if (msg.tool?.GitStatus != null) return "git_status";
+      return "tool";
+    })();
+
+    if (r.pending) {
+      const card = new C.ACBToolCard(msg.tool || {}, msg.id);
+      card.onAction((action) => {
+        chrome.runtime.sendMessage({
+          type: "approve",
+          id: msg.id,
+          allow: action === "allow",
+        });
+      });
+      card.mount(root);
+      limitVisibleWidgets();
+      return;
+    }
+
+    if (toolName === "run_command") {
+      const terminal = new C.ACBTerminal(
+        msg.tool?.RunCommand?.command || "command",
+        msg.id,
+      );
+      const output = r.ok ? (r.output ?? "") : (r.error ?? "");
+      output.split("\n").forEach((line) => terminal.appendLine(line));
+      terminal.finish(r.ok, null);
+      terminal.onAction((action) => {
+        if (action === "insert") insertIntoComposer(output);
+      });
+      terminal.mount(root);
+      limitVisibleWidgets();
+      return;
+    }
+
+    // Auto-insert read-only tools (read_file, list_directory, git_status)
+    if (r.ok && AUTO_INSERT_TOOLS.has(toolName) && r.output) {
+      insertIntoComposer(r.output);
+      showToast(`${toolName} result inserted`);
+      return;
+    }
+
+    const result = new C.ACBResultBlock(
+      { ok: r.ok, output: r.ok ? r.output : r.error },
+      toolName,
+    );
+    result.onAction((action) => {
+      if (action === "insert") {
+        const text = r.ok ? r.output : r.error;
+        if (text) insertIntoComposer(text);
+      }
+    });
+    result.mount(root);
+    limitVisibleWidgets();
+  }
+
+  // ── Message listener ────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "handoff" && msg.payload) showHandoffCard(msg.payload);
+    if (msg.type === "handoff-error") {
+      const el = document.createElement("div");
+      el.className = "acb-status-pill";
+      el.setAttribute("data-state", "error");
+      el.innerHTML = `<span class="acb-status-dot" style="background:#dc2626"></span><span class="acb-status-text">Handoff failed: ${C.escapeHtml(msg.error || "unknown error")}</span>`;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 8000);
+    }
+    // v2: tool_result
+    if (msg.type === "tool_result") showToolWidget(msg);
+    // v1: tool-result (legacy)
     if (msg.type === "tool-result" && msg.result) showToolWidget(msg);
+    if (msg.type === "status") {
+      ensureStatusPill();
+      if (statusPill) {
+        statusPill.setState(msg.connected ? "connected" : "disconnected");
+      }
+    }
   });
 })();

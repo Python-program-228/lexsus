@@ -44,11 +44,21 @@ unpairBtn.addEventListener("click", () => {
 });
 
 handoffBtn.addEventListener("click", () => {
+  msg.textContent = "sending handoff\u2026";
+  let replied = false;
   chrome.runtime.sendMessage({ type: "handoff-request" }, (res) => {
+    if (replied) return;
+    replied = true;
     msg.textContent = res?.ok
-      ? "handoff sent — open chatgpt.com"
+      ? "handoff sent \u2014 open chatgpt.com"
       : res?.error ?? "failed";
   });
+  setTimeout(() => {
+    if (!replied) {
+      replied = true;
+      msg.textContent = "no response from extension \u2014 try reloading";
+    }
+  }, 3000);
 });
 
 refreshStatus();
