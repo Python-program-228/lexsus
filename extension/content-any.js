@@ -59,6 +59,18 @@
       .filter(Boolean)
       .join("\n");
 
+  // ── Auto-insert & toast ─────────────────────────────────────────
+  const AUTO_INSERT_TOOLS = new Set(["read_file", "list_directory", "git_status"]);
+
+  function showToast(text) {
+    const t = document.createElement("div");
+    t.className = "acb-status-pill";
+    t.setAttribute("data-state", "connected");
+    t.innerHTML = `<span class="acb-status-dot" style="background:#10a37f"></span><span class="acb-status-text">${C.escapeHtml(text)}</span>`;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 2000);
+  }
+
   // ── Tool capture (v2: supports <acb_tool> tags, fenced blocks, function calls) ──
 
   // Priority 1: <acb_tool>...</acb_tool> tags (highest reliability)
@@ -421,6 +433,13 @@
         return;
       }
 
+      // Auto-insert read-only tools (read_file, list_directory, git_status)
+      if (AUTO_INSERT_TOOLS.has(meta.tool) && result.output) {
+        insertIntoComposer(result.output);
+        showToast(`${meta.tool} result inserted`);
+        return;
+      }
+
       const resultBlock = new C.ACBResultBlock(
         { ok: true, output: result.output },
         meta.tool || "tool",
@@ -470,6 +489,13 @@
         if (action === "insert") insertIntoComposer(output);
       });
       terminal.mount(root);
+      return;
+    }
+
+    // Auto-insert read-only tools (read_file, list_directory, git_status)
+    if (r.ok && AUTO_INSERT_TOOLS.has(toolName) && r.output) {
+      insertIntoComposer(r.output);
+      showToast(`${toolName} result inserted`);
       return;
     }
 
