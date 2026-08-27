@@ -101,15 +101,6 @@
   // ── Auto-insert & toast ─────────────────────────────────────────
   const AUTO_INSERT_TOOLS = new Set(["read_file", "list_directory", "git_status"]);
 
-  function showToast(text) {
-    const t = document.createElement("div");
-    t.className = "acb-status-pill";
-    t.setAttribute("data-state", "connected");
-    t.innerHTML = `<span class="acb-status-dot" style="background:#10a37f"></span><span class="acb-status-text">${C.escapeHtml(text)}</span>`;
-    document.body.appendChild(t);
-    setTimeout(() => t.remove(), 2000);
-  }
-
   // ── Tool capture (v2: supports <acb_tool> tags, fenced blocks, function calls) ──
 
   // Priority 1: <acb_tool>...</acb_tool> tags (highest reliability)
@@ -349,7 +340,7 @@
   // ── Stage indicator (live tool progress) ────────────────────────
   let stage = null;
   function ensureStage() {
-    if (!stage && C) {
+    if ((!stage || !stage.el.isConnected) && C) {
       stage = new C.ACBStageIndicator();
       stage.mount(document.body);
     }
@@ -375,6 +366,7 @@
   }
   const showWorkingStage = (tool) => ensureStage()?.setStage(stageLabel(tool), "working");
   const markStageDone = () => ensureStage()?.setStage("Finished \u2713", "done");
+  const markStageInserted = () => ensureStage()?.setStage("Inserted \u2713", "done");
   const markStageFailed = () => ensureStage()?.setStage("Failed \u2717", "error");
   const markStageAwait = () => ensureStage()?.setStage("Awaiting approval\u2026", "working");
 
@@ -507,8 +499,7 @@
       // Auto-insert read-only tools (read_file, list_directory, git_status)
       if (AUTO_INSERT_TOOLS.has(meta.tool) && result.output) {
         insertIntoComposer(result.output);
-        showToast(`${meta.tool} result inserted`);
-        markStageDone();
+        markStageInserted();
         return;
       }
 
@@ -573,8 +564,7 @@
     // Auto-insert read-only tools (read_file, list_directory, git_status)
     if (r.ok && AUTO_INSERT_TOOLS.has(toolName) && r.output) {
       insertIntoComposer(r.output);
-      showToast(`${toolName} result inserted`);
-      markStageDone();
+      markStageInserted();
       return;
     }
 
@@ -601,9 +591,8 @@
     }
     if (msg.type === "handoff-error") {
       const el = document.createElement("div");
-      el.className = "acb-status-pill";
-      el.setAttribute("data-state", "error");
-      el.innerHTML = `<span class="acb-status-dot" style="background:#dc2626"></span><span class="acb-status-text">Handoff failed: ${C.escapeHtml(msg.error || "unknown error")}</span>`;
+      el.className = "acb-toast";
+      el.innerHTML = `<span class="acb-status-dot"></span><span class="acb-status-text">Handoff failed: ${C.escapeHtml(msg.error || "unknown error")}</span>`;
       document.body.appendChild(el);
       setTimeout(() => el.remove(), 8000);
     }
