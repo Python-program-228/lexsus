@@ -72,6 +72,52 @@
     }
   }
 
+  // ── Stage Indicator (live tool progress) ────────────────────────
+  const STAGE_SPINNER_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+  const STAGE_CHECK_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+  const STAGE_X_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+
+  class ACBStageIndicator {
+    constructor() {
+      this.el = el("div", { class: "acb-stage", "data-state": "working" });
+      this.icon = el("span", { class: "acb-stage-icon" });
+      this.text = el("span", { class: "acb-stage-text" });
+      this.el.appendChild(this.icon);
+      this.el.appendChild(this.text);
+      this._clearTimer = null;
+    }
+    setStage(text, state) {
+      if (this._clearTimer) {
+        clearTimeout(this._clearTimer);
+        this._clearTimer = null;
+      }
+      this.el.setAttribute("data-state", state || "working");
+      this.icon.innerHTML =
+        state === "done" ? STAGE_CHECK_SVG : state === "error" ? STAGE_X_SVG : STAGE_SPINNER_SVG;
+      this.text.textContent = text;
+      if (state === "done" || state === "error") {
+        this._clearTimer = setTimeout(() => this.clear(), 2500);
+      }
+    }
+    clear() {
+      if (this._clearTimer) {
+        clearTimeout(this._clearTimer);
+        this._clearTimer = null;
+      }
+      this.el.remove();
+    }
+    mount(root) {
+      root.appendChild(this.el);
+      return this;
+    }
+    destroy() {
+      this.clear();
+    }
+  }
+
   // ── Tool Card (approval pending) ─────────────────────────────────
   class ACBToolCard {
     constructor(tool, msgId) {
@@ -384,6 +430,7 @@
   // ── Exports ──────────────────────────────────────────────────────
   window.ACBComponents = {
     ACBStatusPill,
+    ACBStageIndicator,
     ACBToolCard,
     ACBResultBlock,
     ACBTerminal,
