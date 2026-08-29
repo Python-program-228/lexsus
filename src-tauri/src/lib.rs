@@ -361,15 +361,16 @@ fn bridge_audit(
 /// Record an executed tool call as a trace step, so the live activity
 /// trace and handoff reflect real web-AI work.
 pub(crate) fn record_tool_trace(state: &AppState, app: &AppHandle, tool: &bridge::Tool) {
-    let (kind, file, command) = match tool {
-        bridge::Tool::ReadFile { path } => (Some("reading"), Some(path.clone()), None),
-        bridge::Tool::WriteFile { path, .. } => (Some("editing"), Some(path.clone()), None),
-        bridge::Tool::RunCommand { command } => (Some("running"), None, Some(command.clone())),
-        bridge::Tool::ListDirectory { path } => (Some("reading"), Some(path.clone()), None),
-        bridge::Tool::GitStatus => (None, None, None),
-    };
-    let Some(kind) = kind else {
+    let Some(kind) = bridge::spec(tool).trace_kind else {
         return;
+    };
+    // A trace row carries either the file it touched or the command it ran.
+    let (file, command) = match tool {
+        bridge::Tool::RunCommand { command } => (None, Some(command.clone())),
+        _ => (
+            bridge::tool_paths(tool).first().map(|p| p.to_string()),
+            None,
+        ),
     };
     let _ = db::record_trace_step(
         &state.conn.lock().unwrap(),

@@ -407,36 +407,60 @@
   font-weight: 600;
   letter-spacing: -0.02em;
   white-space: nowrap;
+  /* Fallback for a tool with no group — refined by the rules below. */
+  background: rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.25);
 }
 
-.acb-tool-badge.read_file {
+/* Colour by tool group, so adding a tool needs no new CSS. */
+.acb-tool-badge.group-reading {
   background: rgba(96, 165, 250, 0.12);
   color: #93c5fd;
-  border: 1px solid rgba(96, 165, 250, 0.25);
+  border-color: rgba(96, 165, 250, 0.25);
 }
 
-.acb-tool-badge.write_file {
+.acb-tool-badge.group-editing {
   background: rgba(251, 191, 36, 0.12);
   color: #fbbf24;
-  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-color: rgba(251, 191, 36, 0.25);
 }
 
-.acb-tool-badge.run_command {
+.acb-tool-badge.group-commands {
   background: rgba(167, 139, 250, 0.12);
   color: #a78bfa;
-  border: 1px solid rgba(167, 139, 250, 0.25);
+  border-color: rgba(167, 139, 250, 0.25);
 }
 
+.acb-tool-badge.group-search {
+  background: rgba(34, 211, 238, 0.12);
+  color: #67e8f9;
+  border-color: rgba(34, 211, 238, 0.25);
+}
+
+.acb-tool-badge.group-git {
+  background: rgba(248, 113, 113, 0.12);
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.25);
+}
+
+.acb-tool-badge.group-planning {
+  background: rgba(129, 140, 248, 0.12);
+  color: #a5b4fc;
+  border-color: rgba(129, 140, 248, 0.25);
+}
+
+.acb-tool-badge.group-meta {
+  background: rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+/* Per-tool exceptions — must follow the group rules to win. */
 .acb-tool-badge.list_directory {
   background: rgba(52, 211, 153, 0.12);
   color: #6ee7b7;
-  border: 1px solid rgba(52, 211, 153, 0.25);
-}
-
-.acb-tool-badge.git_status {
-  background: rgba(248, 113, 113, 0.12);
-  color: #fca5a5;
-  border: 1px solid rgba(248, 113, 113, 0.25);
+  border-color: rgba(52, 211, 153, 0.25);
 }
 
 .acb-tool-badge-icon {

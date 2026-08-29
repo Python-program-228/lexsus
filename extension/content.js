@@ -1,14 +1,17 @@
 // AI Continuity Bridge — chatgpt.com content script v2.0.
 // Premium dark-mode UI: status pill, tool cards, result blocks, terminal.
-// Injects styles.css and ui-components.js, then renders widgets using
-// the shared component library.
+//
+// The tool vocabulary — names, aliases, parsers, timeouts, prompt text —
+// lives in tool-spec.js, shared with content-any.js and background.js.
+// Only the ChatGPT-specific DOM handling belongs in this file.
 
 (() => {
   "use strict";
 
-  // ui-components.js and styles.css are injected automatically by the
-  // manifest's content_scripts declaration (runs before this script).
+  // tool-spec.js, ui-components.js and styles.css are injected automatically
+  // by the manifest's content_scripts declaration (they run before this).
   const C = window.ACBComponents;
+  const S = window.ACBToolSpec;
 
   // ── Handoff prompt ──────────────────────────────────────────────
   const HANDOFF_PROMPT = (h) =>
@@ -16,25 +19,13 @@
       `# Continue this task (AI Continuity Bridge handoff)`,
       ``,
       `Objective: ${h.objective}`,
-      `Progress: ${h.progress_percent}% \u00b7 Files changed: ${h.files_changed} \u00b7 Errors remaining: ${h.errors_remaining}`,
+      `Progress: ${h.progress_percent}% · Files changed: ${h.files_changed} · Errors remaining: ${h.errors_remaining}`,
       `Next step: ${h.next_step ?? "review the project state"}`,
       h.files && h.files.length > 0 ? `Files involved: ${h.files.join(", ")}` : "",
       h.context ? `Task context so far: ${h.context}` : "",
       h.end_reason ? `Where the previous session stopped: ${h.end_reason}` : "",
       ``,
-      `You are now the coding agent for the local project on the paired machine.`,
-      `To act on the real filesystem you may use these tools, one per line:`,
-      `read_file("path")`,
-      `run_command("shell command")`,
-      `list_directory("path")`,
-      `git_status`,
-      ``,
-      `For write_file \u2014 and ANY tool whose argument spans multiple lines \u2014 you MUST instead emit an acb block containing one JSON object:`,
-      '```acb',
-      '{"tool":"write_file","path":"src/example.ts","content":"<entire new file content>"}',
-      '```',
-      ``,
-      `Each tool call is executed locally by the bridge and the real result will be returned here. Never claim to have read or written files without the tool results.`,
+      S.promptToolSection(),
     ]
       .filter(Boolean)
       .join("\n");
@@ -98,174 +89,7 @@
     return false;
   }
 
-  // ── Auto-insert & toast ─────────────────────────────────────────
-  const AUTO_INSERT_TOOLS = new Set(["read_file", "list_directory", "git_status"]);
-
-  // ── Tool capture (v2: supports <acb_tool> tags, fenced blocks, function calls) ──
-
-  // Priority 1: <acb_tool>...</acb_tool> tags (highest reliability)
-  const ACB_TAG_RE = /<acb_tool>([\s\S]*?)<\/acb_tool>/gi;
-
-  // Priority 2: Fenced JSON blocks (```acb or ```json)
-  const FENCED_RE = /```(?:acb|json)\s*\n([\s\S]*?)```/gi;
-
-  // Priority 3: Function-call syntax
-  const TOOL_RE = [
-    { kind: "ReadFile", re: /read_file\s*[(:]\s*["']([^"'\s)]+)/i },
-    {
-      kind: "WriteFile",
-      re: /write_file\s*[(:]\s*["']([^"']+)["']\s*[,)\s]\s*["']([\s\S]*?)["']\s*\)?/i,
-    },
-    { kind: "RunCommand", re: /run_command\s*[(:]\s*["']?([^"'\n]+)["']?\s*\)?/i },
-    { kind: "ListDirectory", re: /list_directory\s*[(:]\s*["']([^"']+)["']/i },
-    { kind: "GitStatus", re: /git_status\b/i },
-  ];
-
-  // Priority 4: Inline JSON scanning (fallback)
-  const TOOL_KEY_RE = /["'](?:tool|name)["']\s*:/gi;
-
-  function balancedObjectAt(text, start) {
-    let depth = 0;
-    let inStr = false;
-    let esc = false;
-    for (let i = start; i < text.length; i++) {
-      const c = text[i];
-      if (inStr) {
-        if (esc) esc = false;
-        else if (c === "\\") esc = true;
-        else if (c === '"') inStr = false;
-        continue;
-      }
-      if (c === '"') inStr = true;
-      else if (c === "{") depth++;
-      else if (c === "}") {
-        depth--;
-        if (depth === 0) return text.slice(start, i + 1);
-      }
-    }
-    return null;
-  }
-
-  function parseJsonBlock(body) {
-    let obj;
-    try {
-      obj = JSON.parse(body.trim());
-    } catch {
-      return null;
-    }
-    const raw = String(obj.tool ?? obj.name ?? "");
-    const name = raw.toLowerCase().replace(/[\s-]/g, "_");
-    const args = obj.arguments || {};
-    switch (name) {
-      case "read_file":
-        return typeof (args.path || obj.path) === "string"
-          ? { name: "read_file", arguments: { path: args.path || obj.path } }
-          : null;
-      case "write_file":
-        return typeof (args.path || obj.path) === "string"
-          ? {
-              name: "write_file",
-              arguments: {
-                path: args.path || obj.path,
-                content: String(args.content || obj.content || ""),
-              },
-            }
-          : null;
-      case "run_command":
-        return typeof (args.command || obj.command) === "string"
-          ? { name: "run_command", arguments: { command: args.command || obj.command } }
-          : null;
-      case "list_directory":
-        return typeof (args.path || obj.path) === "string"
-          ? { name: "list_directory", arguments: { path: args.path || obj.path } }
-          : null;
-      case "git_status":
-        return { name: "git_status", arguments: {} };
-      default:
-        return null;
-    }
-  }
-
-  // Extract tools from <acb_tool> and fenced blocks. Returns extracted
-  // tools plus the text with those blocks blanked out.
-  function extractAcbTools(text) {
-    const tools = [];
-    const blanks = [];
-
-    // Priority 1: <acb_tool> tags
-    ACB_TAG_RE.lastIndex = 0;
-    let m;
-    while ((m = ACB_TAG_RE.exec(text)) !== null) {
-      const tool = parseJsonBlock(m[1]);
-      if (tool) {
-        tools.push(tool);
-        blanks.push([m.index, m.index + m[0].length]);
-      }
-    }
-
-    // Priority 2: Fenced blocks
-    FENCED_RE.lastIndex = 0;
-    while ((m = FENCED_RE.exec(text)) !== null) {
-      // Skip if already captured by <acb_tool>
-      if (blanks.some(([s, e]) => m.index >= s && m.index < e)) continue;
-      const tool = parseJsonBlock(m[1]);
-      if (tool) {
-        tools.push(tool);
-        blanks.push([m.index, m.index + m[0].length]);
-      }
-    }
-
-    // Priority 4: Inline JSON scanning (only if not in a fenced/tagged block)
-    TOOL_KEY_RE.lastIndex = 0;
-    let k;
-    while ((k = TOOL_KEY_RE.exec(text)) !== null) {
-      // Skip if inside a fenced/tagged block
-      if (blanks.some(([s, e]) => k.index >= s && k.index < e)) continue;
-      const start = text.lastIndexOf("{", k.index);
-      if (start === -1 || k.index - start > 40) continue;
-      const objText = balancedObjectAt(text, start);
-      if (!objText) continue;
-      const tool = parseJsonBlock(objText);
-      if (tool) {
-        tools.push(tool);
-        blanks.push([start, start + objText.length]);
-        TOOL_KEY_RE.lastIndex = start + objText.length;
-      }
-    }
-
-    let rest = text;
-    for (let i = blanks.length - 1; i >= 0; i--) {
-      rest =
-        rest.slice(0, blanks[i][0]) +
-        " ".repeat(blanks[i][1] - blanks[i][0]) +
-        rest.slice(blanks[i][1]);
-    }
-    return { tools, rest };
-  }
-
-  function parseToolLine(line) {
-    for (const { kind, re } of TOOL_RE) {
-      const m = line.match(re);
-      if (!m) continue;
-      switch (kind) {
-        case "ReadFile":
-          return { name: "read_file", arguments: { path: m[1] } };
-        case "WriteFile":
-          return {
-            name: "write_file",
-            arguments: { path: m[1], content: m[2] },
-          };
-        case "RunCommand":
-          return { name: "run_command", arguments: { command: m[1] } };
-        case "ListDirectory":
-          return { name: "list_directory", arguments: { path: m[1] } };
-        case "GitStatus":
-          return { name: "git_status", arguments: {} };
-      }
-    }
-    return null;
-  }
-
+  // ── Tool capture ────────────────────────────────────────────────
   const sentSigs = new Set();
   function sendTool(tool) {
     if (!tool) return;
@@ -285,11 +109,11 @@
     const text = last.textContent;
     if (text === lastScanned) return;
     lastScanned = text;
-    const { tools, rest } = extractAcbTools(text);
+    // Tagged and fenced JSON blocks first; then one-line calls on what's left.
+    const { tools, rest } = S.extractTools(text);
     for (const tool of tools) sendTool(tool);
-    // Priority 3: function-call syntax on remaining text
     for (const line of rest.split("\n")) {
-      sendTool(parseToolLine(line.trim()));
+      sendTool(S.parseToolLine(line.trim()));
     }
   };
 
@@ -346,29 +170,11 @@
     }
     return stage;
   }
-  function stageLabel(tool) {
-    const name = (tool && (tool.name || tool.tool)) || "";
-    const args = (tool && tool.arguments) || {};
-    switch (name) {
-      case "read_file":
-        return `Reading ${args.path || "file"}`;
-      case "write_file":
-        return `Writing ${args.path || "file"}`;
-      case "run_command":
-        return `Running ${args.command || "command"}`;
-      case "list_directory":
-        return `Listing ${args.path || "directory"}`;
-      case "git_status":
-        return "Fetching git status";
-      default:
-        return `Fetching ${name}`;
-    }
-  }
-  const showWorkingStage = (tool) => ensureStage()?.setStage(stageLabel(tool), "working");
-  const markStageDone = () => ensureStage()?.setStage("Finished \u2713", "done");
-  const markStageInserted = () => ensureStage()?.setStage("Inserted \u2713", "done");
-  const markStageFailed = () => ensureStage()?.setStage("Failed \u2717", "error");
-  const markStageAwait = () => ensureStage()?.setStage("Awaiting approval\u2026", "working");
+  const showWorkingStage = (tool) => ensureStage()?.setStage(S.stageLabel(tool), "working");
+  const markStageDone = () => ensureStage()?.setStage("Finished ✓", "done");
+  const markStageInserted = () => ensureStage()?.setStage("Inserted ✓", "done");
+  const markStageFailed = () => ensureStage()?.setStage("Failed ✗", "error");
+  const markStageAwait = () => ensureStage()?.setStage("Awaiting approval…", "working");
 
   // ── Stacked widget management (iOS-style) ───────────────────────
   const MAX_VISIBLE = 3;
@@ -454,26 +260,12 @@
         return;
       }
 
-      if (status === "denied" || status === "timeout") {
-        // Show error block
+      if (status === "denied" || status === "timeout" || status === "error") {
         markStageFailed();
         const resultBlock = new C.ACBResultBlock(
-          { ok: false, output: error.message || status },
+          { ok: false, output: error.message || (status === "error" ? "Unknown error" : status) },
           meta.tool || "tool",
-          { detail: meta.path || meta.command || "", errorCode: error.code || "" },
-        );
-        resultBlock.mount(root);
-        limitVisibleWidgets();
-        return;
-      }
-
-      if (status === "error") {
-        // Show error block
-        markStageFailed();
-        const resultBlock = new C.ACBResultBlock(
-          { ok: false, output: error.message || "Unknown error" },
-          meta.tool || "tool",
-          { detail: meta.path || meta.command || "", errorCode: error.code || "" },
+          { detail: meta.path || meta.command || meta.detail || "", errorCode: error.code || "" },
         );
         resultBlock.mount(root);
         limitVisibleWidgets();
@@ -498,8 +290,8 @@
         return;
       }
 
-      // Auto-insert read-only tools (read_file, list_directory, git_status)
-      if (AUTO_INSERT_TOOLS.has(meta.tool) && result.output) {
+      // Read-only results go straight back into the chat.
+      if (S.isAutoInsert(meta.tool) && result.output) {
         insertIntoComposer(result.output);
         markStageInserted();
         return;
@@ -508,6 +300,7 @@
       const resultBlock = new C.ACBResultBlock(
         { ok: true, output: result.output },
         meta.tool || "tool",
+        { detail: meta.path || meta.command || meta.detail || "" },
       );
       resultBlock.onAction((action) => {
         if (action === "insert" && result.output) {
@@ -522,14 +315,7 @@
 
     // Legacy v1: tool-result format
     const r = msg.result;
-    const toolName = (() => {
-      if (msg.tool?.ReadFile) return "read_file";
-      if (msg.tool?.WriteFile) return "write_file";
-      if (msg.tool?.RunCommand) return "run_command";
-      if (msg.tool?.ListDirectory) return "list_directory";
-      if (msg.tool?.GitStatus != null) return "git_status";
-      return "tool";
-    })();
+    const t = S.normalizeTool(msg.tool) || { name: "tool", args: {} };
 
     if (r.pending) {
       const card = new C.ACBToolCard(msg.tool || {}, msg.id);
@@ -546,11 +332,8 @@
       return;
     }
 
-    if (toolName === "run_command") {
-      const terminal = new C.ACBTerminal(
-        msg.tool?.RunCommand?.command || "command",
-        msg.id,
-      );
+    if (t.name === "run_command") {
+      const terminal = new C.ACBTerminal(t.args.command || "command", msg.id);
       const output = r.ok ? (r.output ?? "") : (r.error ?? "");
       output.split("\n").forEach((line) => terminal.appendLine(line));
       terminal.finish(r.ok, null);
@@ -563,8 +346,8 @@
       return;
     }
 
-    // Auto-insert read-only tools (read_file, list_directory, git_status)
-    if (r.ok && AUTO_INSERT_TOOLS.has(toolName) && r.output) {
+    // Read-only results go straight back into the chat.
+    if (r.ok && S.isAutoInsert(t.name) && r.output) {
       insertIntoComposer(r.output);
       markStageInserted();
       return;
@@ -572,7 +355,7 @@
 
     const result = new C.ACBResultBlock(
       { ok: r.ok, output: r.ok ? r.output : r.error },
-      toolName,
+      t.name,
     );
     result.onAction((action) => {
       if (action === "insert") {
@@ -597,6 +380,11 @@
       el.innerHTML = `<span class="acb-status-dot"></span><span class="acb-status-text">Handoff failed: ${C.escapeHtml(msg.error || "unknown error")}</span>`;
       document.body.appendChild(el);
       setTimeout(() => el.remove(), 8000);
+    }
+    // Prime an already-open chat with the tool manifest (popup button).
+    if (msg.type === "send-manifest") {
+      const inserted = insertIntoComposer(S.promptToolSection());
+      if (inserted) setTimeout(submitComposer, 300);
     }
     // v2: tool_result
     if (msg.type === "tool_result") {

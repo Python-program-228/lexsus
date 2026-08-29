@@ -18,11 +18,264 @@ use std::time::Duration;
 /// A web-AI tool call (serde: externally-tagged, mirrors `types.ts`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Tool {
-    ReadFile { path: String },
-    WriteFile { path: String, content: String },
-    RunCommand { command: String },
-    ListDirectory { path: String },
+    ReadFile {
+        path: String,
+    },
+    WriteFile {
+        path: String,
+        content: String,
+    },
+    RunCommand {
+        command: String,
+    },
+    ListDirectory {
+        path: String,
+    },
     GitStatus,
+    /// Meta: the full argument schema for one tool. Needs no project root.
+    DescribeTool {
+        name: String,
+    },
+    /// Meta: every available tool, grouped. Needs no project root.
+    ListTools,
+}
+
+/// When a tool call requires an explicit user decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Approval {
+    /// Executes immediately.
+    Auto,
+    /// Executes immediately unless a target path is sensitive.
+    SensitivePathOnly,
+    /// Always asks.
+    Always,
+    /// Always asks, and may destroy work — the approval UI must show
+    /// exactly what is affected.
+    Destructive,
+}
+
+/// Static, per-tool metadata. This is the single source of truth: the
+/// approval policy, trace kind, timeout, auto-insert behaviour and the
+/// AI-facing manifest are all derived from here rather than repeated in
+/// separate `match` arms across `bridge.rs`, `ws.rs`, `lib.rs` and the
+/// browser extension.
+#[derive(Debug, Clone)]
+pub struct ToolSpec {
+    pub name: &'static str,
+    /// Alternate names accepted on the wire. A web AI emits whatever it
+    /// remembers — `Grep`, `search_files`, `str_replace`, `bash` — so
+    /// resolving aliases directly raises the tool-call hit rate.
+    pub aliases: &'static [&'static str],
+    /// Argument list for the manifest, e.g. `"path, offset?, limit?"`.
+    pub args: &'static str,
+    /// One terse line, shown in the manifest.
+    pub summary: &'static str,
+    pub approval: Approval,
+    /// Activity-trace kind, or `None` for calls not worth tracing.
+    pub trace_kind: Option<&'static str>,
+    pub timeout_ms: u32,
+    /// Read-only result the extension can paste straight into the chat.
+    pub auto_insert: bool,
+    /// Manifest grouping; must appear in [`GROUPS`].
+    pub group: &'static str,
+}
+
+/// Manifest group order.
+pub const GROUPS: &[&str] = &[
+    "Reading", "Editing", "Commands", "Search", "Git", "Planning", "Meta",
+];
+
+/// Every tool the bridge can execute.
+pub const SPECS: &[ToolSpec] = &[
+    ToolSpec {
+        name: "read_file",
+        aliases: &["read", "view_file", "cat", "open_file"],
+        args: "path",
+        summary: "Read a file's contents",
+        approval: Approval::SensitivePathOnly,
+        trace_kind: Some("reading"),
+        timeout_ms: 10_000,
+        auto_insert: true,
+        group: "Reading",
+    },
+    ToolSpec {
+        name: "list_directory",
+        aliases: &["ls", "list_dir", "list", "dir"],
+        args: "path",
+        summary: "List the entries of a directory",
+        approval: Approval::Auto,
+        trace_kind: Some("reading"),
+        timeout_ms: 10_000,
+        auto_insert: true,
+        group: "Reading",
+    },
+    ToolSpec {
+        name: "write_file",
+        aliases: &["write", "create_file", "put_file"],
+        args: "path, content",
+        summary: "Overwrite a file with new content",
+        approval: Approval::Always,
+        trace_kind: Some("editing"),
+        timeout_ms: 15_000,
+        auto_insert: false,
+        group: "Editing",
+    },
+    ToolSpec {
+        name: "run_command",
+        aliases: &["bash", "shell", "execute", "terminal", "sh"],
+        args: "command",
+        summary: "Run a shell command in the project root",
+        approval: Approval::Always,
+        trace_kind: Some("running"),
+        timeout_ms: 120_000,
+        auto_insert: false,
+        group: "Commands",
+    },
+    ToolSpec {
+        name: "git_status",
+        aliases: &["status", "git_st"],
+        args: "",
+        summary: "Show changed files in the git working tree",
+        approval: Approval::Auto,
+        trace_kind: None,
+        timeout_ms: 10_000,
+        auto_insert: true,
+        group: "Git",
+    },
+    ToolSpec {
+        name: "describe_tool",
+        aliases: &["tool_help", "help", "tool_info"],
+        args: "name",
+        summary: "Show the full argument schema for one tool",
+        approval: Approval::Auto,
+        trace_kind: None,
+        timeout_ms: 5_000,
+        auto_insert: true,
+        group: "Meta",
+    },
+    ToolSpec {
+        name: "list_tools",
+        aliases: &["tools", "available_tools"],
+        args: "",
+        summary: "List every available tool, grouped",
+        approval: Approval::Auto,
+        trace_kind: None,
+        timeout_ms: 5_000,
+        auto_insert: true,
+        group: "Meta",
+    },
+];
+
+/// Canonical name of a tool variant.
+pub fn tool_name(tool: &Tool) -> &'static str {
+    match tool {
+        Tool::ReadFile { .. } => "read_file",
+        Tool::WriteFile { .. } => "write_file",
+        Tool::RunCommand { .. } => "run_command",
+        Tool::ListDirectory { .. } => "list_directory",
+        Tool::GitStatus => "git_status",
+        Tool::DescribeTool { .. } => "describe_tool",
+        Tool::ListTools => "list_tools",
+    }
+}
+
+/// The spec for a tool call. Every [`Tool`] variant has a [`SPECS`] row —
+/// `every_variant_has_a_spec` enforces it.
+pub fn spec(tool: &Tool) -> &'static ToolSpec {
+    let name = tool_name(tool);
+    SPECS
+        .iter()
+        .find(|s| s.name == name)
+        .expect("every Tool variant needs a SPECS row")
+}
+
+/// Normalize a wire tool name: strip any namespace prefix
+/// (`default_api.read_file`), lowercase, and treat `-`/space as `_`.
+fn normalize_tool_name(name: &str) -> String {
+    name.rsplit('.')
+        .next()
+        .unwrap_or(name)
+        .trim()
+        .chars()
+        .map(|c| match c {
+            '-' | ' ' => '_',
+            c => c.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
+/// Look up a spec by canonical name or alias.
+pub fn spec_by_name(name: &str) -> Option<&'static ToolSpec> {
+    let n = normalize_tool_name(name);
+    SPECS
+        .iter()
+        .find(|s| s.name == n || s.aliases.contains(&n.as_str()))
+}
+
+/// The compact, grouped tool manifest handed to a web AI. Deliberately
+/// terse: full per-tool docs for every tool would crowd out the actual
+/// project context, so the AI calls `describe_tool` for detail on demand.
+pub fn tool_manifest() -> String {
+    let mut out = String::new();
+    for group in GROUPS {
+        let rows: Vec<_> = SPECS.iter().filter(|s| &s.group == group).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        out.push_str(group);
+        out.push_str(":\n");
+        for s in rows {
+            if s.args.is_empty() {
+                out.push_str(&format!("  {} — {}\n", s.name, s.summary));
+            } else {
+                out.push_str(&format!("  {}({}) — {}\n", s.name, s.args, s.summary));
+            }
+        }
+    }
+    out
+}
+
+/// Full detail for one tool, for `describe_tool`.
+fn describe_spec(s: &ToolSpec) -> String {
+    let approval = match s.approval {
+        Approval::Auto => "runs immediately",
+        Approval::SensitivePathOnly => "runs immediately unless the path is sensitive",
+        Approval::Always => "requires the user's approval",
+        Approval::Destructive => "requires the user's approval (may destroy work)",
+    };
+    let mut out = format!("{}({})\n  {}\n", s.name, s.args, s.summary);
+    out.push_str(&format!("  Approval: {approval}\n"));
+    out.push_str(&format!("  Timeout: {}ms\n", s.timeout_ms));
+    if !s.aliases.is_empty() {
+        out.push_str(&format!("  Also accepted as: {}\n", s.aliases.join(", ")));
+    }
+    out
+}
+
+/// Filesystem paths a call touches, for the sensitive-path policy. Tools
+/// that take two paths must return both, or a secret can be laundered by
+/// copying it to an innocuous name.
+pub fn tool_paths(tool: &Tool) -> Vec<&str> {
+    match tool {
+        Tool::ReadFile { path } | Tool::WriteFile { path, .. } | Tool::ListDirectory { path } => {
+            vec![path.as_str()]
+        }
+        Tool::RunCommand { .. } | Tool::GitStatus | Tool::DescribeTool { .. } | Tool::ListTools => {
+            vec![]
+        }
+    }
+}
+
+/// The per-call detail shown beside the tool name in the approval UI,
+/// audit log and activity trace.
+pub fn detail(tool: &Tool) -> Option<String> {
+    match tool {
+        Tool::ReadFile { path } | Tool::ListDirectory { path } => Some(path.clone()),
+        Tool::WriteFile { path, content } => Some(format!("{path} ({} bytes)", content.len())),
+        Tool::RunCommand { command } => Some(command.clone()),
+        Tool::DescribeTool { name } => Some(name.clone()),
+        Tool::GitStatus | Tool::ListTools => None,
+    }
 }
 
 /// A streaming event for a running command. Mirrors the `terminal://run`
@@ -227,14 +480,10 @@ impl Bridge {
 
 /// Human-readable summary of a tool call (for the approval UI + audit).
 pub fn describe(tool: &Tool) -> String {
-    match tool {
-        Tool::ReadFile { path } => format!("read_file {path}"),
-        Tool::WriteFile { path, content } => {
-            format!("write_file {path} ({} bytes)", content.len())
-        }
-        Tool::RunCommand { command } => format!("run_command: {command}"),
-        Tool::ListDirectory { path } => format!("list_directory {path}"),
-        Tool::GitStatus => "git_status".to_string(),
+    let name = tool_name(tool);
+    match detail(tool) {
+        Some(d) => format!("{name} {d}"),
+        None => name.to_string(),
     }
 }
 
@@ -278,18 +527,18 @@ pub fn is_sensitive_path(path: &Path) -> bool {
 }
 
 /// Approval policy: `Some(reason)` when the call needs user approval.
+/// Derived entirely from the tool's [`ToolSpec`] — adding a tool means
+/// adding a `SPECS` row, not editing this function.
 pub fn needs_approval(tool: &Tool) -> Option<String> {
-    match tool {
-        Tool::ReadFile { path } => {
-            if is_sensitive_path(Path::new(path)) {
-                Some("read of sensitive path".to_string())
-            } else {
-                None
-            }
-        }
-        Tool::WriteFile { .. } => Some("write_file".to_string()),
-        Tool::RunCommand { .. } => Some("run_command".to_string()),
-        Tool::ListDirectory { .. } | Tool::GitStatus => None,
+    let s = spec(tool);
+    match s.approval {
+        Approval::Auto => None,
+        Approval::SensitivePathOnly => tool_paths(tool)
+            .into_iter()
+            .any(|p| is_sensitive_path(Path::new(p)))
+            .then(|| "read of sensitive path".to_string()),
+        Approval::Always => Some(s.name.to_string()),
+        Approval::Destructive => Some(format!("{} (destructive)", s.name)),
     }
 }
 
@@ -328,6 +577,24 @@ pub fn execute(
     root: Option<&Path>,
     mut on_event: Option<&mut dyn FnMut(CommandEvent)>,
 ) -> ToolResult {
+    // Meta-tools answer from the spec table, so they work before a project
+    // is opened — an AI that has lost the manifest can always recover it.
+    match tool {
+        Tool::ListTools => {
+            return ToolResult::ok(tool_manifest());
+        }
+        Tool::DescribeTool { name } => {
+            return match spec_by_name(name) {
+                Some(s) => ToolResult::ok(describe_spec(s)),
+                None => ToolResult::err_code(
+                    ErrorCode::UnknownTool,
+                    format!("unknown tool: {name}. Call list_tools for the full list."),
+                ),
+            };
+        }
+        _ => {}
+    }
+
     let Some(root) = root else {
         return ToolResult::err_code(ErrorCode::InternalError, "project root not set");
     };
@@ -351,10 +618,7 @@ pub fn execute(
                     );
                 }
                 Err(e) => {
-                    return ToolResult::err_code(
-                        ErrorCode::FileNotFound,
-                        format!("{path}: {e}"),
-                    );
+                    return ToolResult::err_code(ErrorCode::FileNotFound, format!("{path}: {e}"));
                 }
                 _ => {}
             }
@@ -374,10 +638,7 @@ pub fn execute(
                     }
                     ToolResult::ok(String::from_utf8_lossy(&bytes).into_owned())
                 }
-                Err(e) => ToolResult::err_code(
-                    ErrorCode::ExecutionFailed,
-                    format!("{path}: {e}"),
-                ),
+                Err(e) => ToolResult::err_code(ErrorCode::ExecutionFailed, format!("{path}: {e}")),
             }
         }
         Tool::WriteFile { path, content } => {
@@ -400,10 +661,7 @@ pub fn execute(
             }
             match std::fs::write(&p, content.as_bytes()) {
                 Ok(()) => ToolResult::ok(format!("wrote {} bytes to {path}", content.len())),
-                Err(e) => ToolResult::err_code(
-                    ErrorCode::ExecutionFailed,
-                    format!("{path}: {e}"),
-                ),
+                Err(e) => ToolResult::err_code(ErrorCode::ExecutionFailed, format!("{path}: {e}")),
             }
         }
         Tool::RunCommand { command } => {
@@ -453,10 +711,7 @@ pub fn execute(
             let mut text = out.output;
             if out.timed_out {
                 text.push_str("\n[timed out — process killed]");
-                return ToolResult::err_code(
-                    ErrorCode::CommandTimeout,
-                    text,
-                );
+                return ToolResult::err_code(ErrorCode::CommandTimeout, text);
             }
             if out.truncated {
                 text.push_str("\n[output truncated]");
@@ -482,10 +737,9 @@ pub fn execute(
                         names.push(name);
                     }
                 }
-                Err(e) => return ToolResult::err_code(
-                    ErrorCode::ExecutionFailed,
-                    format!("{path}: {e}"),
-                ),
+                Err(e) => {
+                    return ToolResult::err_code(ErrorCode::ExecutionFailed, format!("{path}: {e}"))
+                }
             }
             names.sort();
             let mut out = format!("[{} entries]\n", names.len());
@@ -523,6 +777,8 @@ pub fn execute(
             }
             ToolResult::ok(out)
         }
+        // Handled above, before the project-root check.
+        Tool::DescribeTool { .. } | Tool::ListTools => unreachable!(),
     }
 }
 
@@ -693,5 +949,148 @@ mod tests {
         assert!(r.error.unwrap().contains("denied"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One row per variant. Kept exhaustive by the `match` below, so adding
+    /// a `Tool` variant without a `SPECS` row fails to compile here.
+    fn every_variant() -> Vec<Tool> {
+        let all = vec![
+            Tool::ReadFile { path: "a".into() },
+            Tool::WriteFile {
+                path: "a".into(),
+                content: String::new(),
+            },
+            Tool::RunCommand {
+                command: "true".into(),
+            },
+            Tool::ListDirectory { path: ".".into() },
+            Tool::GitStatus,
+            Tool::DescribeTool {
+                name: "read_file".into(),
+            },
+            Tool::ListTools,
+        ];
+        for t in &all {
+            // Exhaustive: the compiler flags a new variant missing above.
+            match t {
+                Tool::ReadFile { .. }
+                | Tool::WriteFile { .. }
+                | Tool::RunCommand { .. }
+                | Tool::ListDirectory { .. }
+                | Tool::GitStatus
+                | Tool::DescribeTool { .. }
+                | Tool::ListTools => {}
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn every_variant_has_a_spec() {
+        for tool in every_variant() {
+            let s = spec(&tool); // panics when the row is missing
+            assert!(
+                GROUPS.contains(&s.group),
+                "{}: group {:?} is not in GROUPS",
+                s.name,
+                s.group
+            );
+            assert!(!s.summary.is_empty(), "{}: needs a summary", s.name);
+            assert!(s.timeout_ms > 0, "{}: needs a timeout", s.name);
+        }
+    }
+
+    #[test]
+    fn tool_names_and_aliases_are_unique() {
+        let mut seen: Vec<&str> = Vec::new();
+        for s in SPECS {
+            for name in std::iter::once(&s.name).chain(s.aliases.iter()) {
+                assert!(
+                    !seen.contains(name),
+                    "{name:?} is claimed twice — resolution would be order-dependent"
+                );
+                seen.push(*name);
+            }
+        }
+    }
+
+    #[test]
+    fn aliases_resolve() {
+        for (input, expected) in [
+            ("read_file", "read_file"),
+            ("Read", "read_file"),
+            ("cat", "read_file"),
+            ("bash", "run_command"),
+            ("Shell", "run_command"),
+            ("ls", "list_directory"),
+            ("list-dir", "list_directory"),
+            ("default_api.write_file", "write_file"),
+            ("  git_status  ", "git_status"),
+        ] {
+            assert_eq!(
+                spec_by_name(input).map(|s| s.name),
+                Some(expected),
+                "{input:?} should resolve to {expected}"
+            );
+        }
+        assert!(spec_by_name("teleport").is_none());
+    }
+
+    #[test]
+    fn meta_tools_need_no_project_root() {
+        let r = execute(&Tool::ListTools, None, None);
+        assert!(r.ok, "{:?}", r.error);
+        let manifest = r.output.unwrap();
+        for s in SPECS {
+            assert!(manifest.contains(s.name), "manifest omits {}", s.name);
+        }
+
+        let r = execute(
+            &Tool::DescribeTool {
+                name: "grep".into(), // not implemented yet
+            },
+            None,
+            None,
+        );
+        assert!(!r.ok);
+        assert!(
+            r.error.unwrap().contains("list_tools"),
+            "point the AI at a recovery path"
+        );
+
+        // An alias is enough to look a tool up.
+        let r = execute(&Tool::DescribeTool { name: "cat".into() }, None, None);
+        assert!(r.ok, "{:?}", r.error);
+        assert!(r.output.unwrap().contains("read_file"));
+    }
+
+    #[test]
+    fn describe_keeps_the_summary_format() {
+        assert_eq!(
+            describe(&Tool::ReadFile {
+                path: "src/a.ts".into()
+            }),
+            "read_file src/a.ts"
+        );
+        assert_eq!(
+            describe(&Tool::WriteFile {
+                path: "a.ts".into(),
+                content: "abc".into()
+            }),
+            "write_file a.ts (3 bytes)"
+        );
+        assert_eq!(describe(&Tool::GitStatus), "git_status");
+    }
+
+    #[test]
+    fn manifest_stays_small() {
+        // Progressive disclosure: the manifest competes with real project
+        // context in the AI's window, so keep it terse even at 44 tools.
+        let manifest = tool_manifest();
+        assert!(
+            manifest.len() < 4_000,
+            "manifest is {} bytes — move detail into describe_tool",
+            manifest.len()
+        );
     }
 }

@@ -6,6 +6,11 @@
 // Protocol v2: UUID-based request tracking, structured error codes,
 // automatic timeouts with retry, and backwards compatibility with v1.
 
+// Per-tool timeouts come from the shared spec table; a service worker is a
+// separate JS context from the content scripts, so it loads it itself.
+importScripts("tool-spec.js");
+const SPEC = globalThis.ACBToolSpec;
+
 const WS_URL = "ws://127.0.0.1:45241";
 const PROTOCOL_VERSION = 2;
 
@@ -17,14 +22,6 @@ const TARGET_HOSTS = {
 
 // ── Request tracking ──────────────────────────────────────────────
 const pendingRequests = new Map(); // id → { tool, timestamp, retries, timeout, tabId }
-const TOOL_TIMEOUTS = {
-  read_file: 10000,
-  write_file: 15000,
-  run_command: 120000,
-  list_directory: 10000,
-  search_files: 15000,
-  git_status: 10000,
-};
 const MAX_RETRIES = 1;
 const REQUEST_TTL_MS = 60000;
 
@@ -33,7 +30,7 @@ function generateId() {
 }
 
 function getToolTimeout(toolName) {
-  return TOOL_TIMEOUTS[toolName] || 15000;
+  return SPEC.timeoutFor(toolName);
 }
 
 function trackRequest(id, tool, tabId) {
@@ -366,6 +363,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else {
         sendResponse({ ok: false, error: "not paired" });
       }
+      break;
+
+    // Prime an already-open chat with the tool manifest. Without this the
+    // tool list only ever reaches a chat that received a handoff.
+    case "send-manifest":
+      forwardToTabs({ type: "send-manifest" }, hostForTarget(msg.target));
+      sendResponse({ ok: true });
       break;
     default:
       sendResponse({ ok: false });

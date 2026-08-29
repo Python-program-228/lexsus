@@ -7,6 +7,7 @@ const code = document.getElementById("code");
 const pairBtn = document.getElementById("pair");
 const unpairBtn = document.getElementById("unpair");
 const handoffBtn = document.getElementById("handoff");
+const manifestBtn = document.getElementById("manifest");
 
 function refreshStatus() {
   chrome.runtime.sendMessage({ type: "get-status" }, (res) => {
@@ -59,6 +60,22 @@ handoffBtn.addEventListener("click", () => {
       msg.textContent = "no response from extension \u2014 try reloading";
     }
   }, 3000);
+});
+
+// Prime an open chat with the tool list. Without this, a chat only learns
+// which tools exist if it received a handoff.
+manifestBtn.addEventListener("click", () => {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const url = tabs?.[0]?.url ?? "";
+    const target = url.includes("claude.ai")
+      ? "claudeai"
+      : url.includes("gemini.google.com")
+        ? "gemini"
+        : "chatgpt";
+    chrome.runtime.sendMessage({ type: "send-manifest", target }, (res) => {
+      msg.textContent = res?.ok ? "tool manifest sent" : (res?.error ?? "failed");
+    });
+  });
 });
 
 refreshStatus();
