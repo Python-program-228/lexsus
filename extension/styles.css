@@ -661,6 +661,18 @@
   color: var(--acb-text-dim);
 }
 
+.acb-result-code {
+  font-family: var(--acb-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--acb-error, #ef4444);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
 .acb-result-content {
   padding: 8px 14px;
   overflow-x: auto;

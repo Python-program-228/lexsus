@@ -460,6 +460,7 @@
         const resultBlock = new C.ACBResultBlock(
           { ok: false, output: error.message || status },
           meta.tool || "tool",
+          { detail: meta.path || meta.command || "", errorCode: error.code || "" },
         );
         resultBlock.mount(root);
         limitVisibleWidgets();
@@ -472,6 +473,7 @@
         const resultBlock = new C.ACBResultBlock(
           { ok: false, output: error.message || "Unknown error" },
           meta.tool || "tool",
+          { detail: meta.path || meta.command || "", errorCode: error.code || "" },
         );
         resultBlock.mount(root);
         limitVisibleWidgets();
