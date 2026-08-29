@@ -20,6 +20,14 @@ use std::time::Duration;
 pub enum Tool {
     ReadFile {
         path: String,
+        /// 1-based first line to return. Absent → 1. Reads are chunked, so a
+        /// large file is paged through rather than truncated or refused.
+        #[serde(default)]
+        offset: Option<u32>,
+        /// Maximum lines to return. Absent → `CHUNK_LINES`. Always further
+        /// bounded by `CHUNK_BYTES`.
+        #[serde(default)]
+        limit: Option<u32>,
     },
     WriteFile {
         path: String,
@@ -90,8 +98,8 @@ pub const SPECS: &[ToolSpec] = &[
     ToolSpec {
         name: "read_file",
         aliases: &["read", "view_file", "cat", "open_file"],
-        args: "path",
-        summary: "Read a file's contents",
+        args: "path, offset?",
+        summary: "Read a file as numbered lines, in chunks for large files",
         approval: Approval::SensitivePathOnly,
         trace_kind: Some("reading"),
         timeout_ms: 10_000,
@@ -266,7 +274,9 @@ fn describe_spec(s: &ToolSpec) -> String {
 /// copying it to an innocuous name.
 pub fn tool_paths(tool: &Tool) -> Vec<&str> {
     match tool {
-        Tool::ReadFile { path } | Tool::WriteFile { path, .. } | Tool::ListDirectory { path } => {
+        Tool::ReadFile { path, .. }
+        | Tool::WriteFile { path, .. }
+        | Tool::ListDirectory { path } => {
             vec![path.as_str()]
         }
         Tool::RunCommand { .. } | Tool::GitStatus | Tool::DescribeTool { .. } | Tool::ListTools => {
@@ -279,7 +289,13 @@ pub fn tool_paths(tool: &Tool) -> Vec<&str> {
 /// audit log and activity trace.
 pub fn detail(tool: &Tool) -> Option<String> {
     match tool {
-        Tool::ReadFile { path } | Tool::ListDirectory { path } => Some(path.clone()),
+        // The offset is part of the detail so the trace and audit log show
+        // which chunk was read, not just the same path N times.
+        Tool::ReadFile { path, offset, .. } => Some(match offset {
+            Some(n) if *n > 1 => format!("{path} from line {n}"),
+            _ => path.clone(),
+        }),
+        Tool::ListDirectory { path } => Some(path.clone()),
         Tool::WriteFile { path, content } => Some(format!("{path} ({} bytes)", content.len())),
         Tool::RunCommand { command } => Some(command.clone()),
         Tool::DescribeTool { name } => Some(name.clone()),
@@ -551,7 +567,124 @@ pub fn needs_approval(tool: &Tool) -> Option<String> {
     }
 }
 
-const READ_CAP: u64 = 512 * 1024;
+/// Ceiling on the whole file. Only one chunk is ever returned, so this is a
+/// sanity limit on what we will scan, not on what the AI can read.
+const READ_CAP: u64 = 16 * 1024 * 1024;
+
+/// One chunk's budget. Sized to land well inside the extension's 24KB
+/// composer cap (`COMPOSER_CAP` in `tool-spec.js`) once line numbers and the
+/// footer are added, because a single oversized insert froze the host page.
+/// A single line longer than this is still returned whole — the composer cap
+/// is the backstop for that case.
+const CHUNK_LINES: usize = 400;
+const CHUNK_BYTES: usize = 16 * 1024;
+
+/// Greedy chunk boundaries as `(start, end)` line indexes, half-open.
+///
+/// A chunk takes at most `want` lines and at most `CHUNK_BYTES`, except that
+/// it always takes at least one line — otherwise a single very long line
+/// (minified JS, a data blob) would make no progress.
+fn chunk_bounds(lines: &[&str], want: usize) -> Vec<(usize, usize)> {
+    let mut bounds = Vec::new();
+    let mut start = 0;
+    while start < lines.len() {
+        let mut end = start;
+        let mut bytes = 0usize;
+        while end < lines.len() && end - start < want {
+            let next = lines[end].len() + 1;
+            if bytes + next > CHUNK_BYTES && end > start {
+                break;
+            }
+            bytes += next;
+            end += 1;
+        }
+        bounds.push((start, end));
+        start = end;
+    }
+    bounds
+}
+
+/// Render one chunk of a file as `cat -n` style numbered lines, with a footer
+/// naming the exact call that returns the next chunk.
+///
+/// Files are paged rather than truncated. Pushing a whole large file into the
+/// chat composer at once pegged the CPU and froze the page, and silently
+/// cutting the tail meant the AI could never see the rest of the file.
+fn chunk_text(path: &str, text: &str, offset: Option<u32>, limit: Option<u32>) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let total = lines.len();
+    if total == 0 {
+        return format!("[{path} is empty]\n");
+    }
+
+    // Clamped rather than rejected: the AI is guessing at file length, and a
+    // hard error on a stale offset would strand it mid-file.
+    let start = (offset.unwrap_or(1).max(1) as usize - 1).min(total - 1);
+    let want = limit.map(|l| l.max(1) as usize).unwrap_or(CHUNK_LINES);
+
+    let bounds = chunk_bounds(&lines, want);
+    // Only meaningful when the request lands on a boundary — which it does for
+    // an initial read and for any offset taken from a previous footer.
+    let chunk_no = bounds
+        .iter()
+        .position(|(s, _)| *s == start)
+        .map(|i| (i + 1, bounds.len()));
+    let end = bounds
+        .iter()
+        .find(|(s, _)| *s == start)
+        .map(|(_, e)| *e)
+        .unwrap_or_else(|| {
+            // Off-boundary offset: apply the same budget from where we are.
+            chunk_bounds(&lines[start..], want)
+                .first()
+                .map(|(_, e)| start + e)
+                .unwrap_or(total)
+        });
+
+    let width = total.to_string().len().max(4);
+    let mut out = String::with_capacity(CHUNK_BYTES + 256);
+    for (i, line) in lines[start..end].iter().enumerate() {
+        out.push_str(&format!("{:>width$}| {}\n", start + i + 1, line));
+    }
+
+    // A file that fits in one chunk reads exactly as it did before.
+    if start == 0 && end == total {
+        return out;
+    }
+
+    let shown: usize = lines[start..end].iter().map(|l| l.len() + 1).sum();
+    out.push('\n');
+    match chunk_no {
+        Some((i, n)) => out.push_str(&format!("[chunk {i} of {n} · ")),
+        None => out.push('['),
+    }
+    out.push_str(&format!(
+        "lines {}-{} of {} · {} of {}]\n",
+        start + 1,
+        end,
+        total,
+        human_bytes(shown),
+        human_bytes(text.len())
+    ));
+    if end < total {
+        out.push_str(&format!(
+            "[to continue, call: read_file(\"{}\", {})]\n",
+            path,
+            end + 1
+        ));
+    } else {
+        out.push_str("[end of file]\n");
+    }
+    out
+}
+
+fn human_bytes(n: usize) -> String {
+    if n < 1024 {
+        format!("{n} B")
+    } else {
+        format!("{:.1} KB", n as f64 / 1024.0)
+    }
+}
 
 /// Resolve a tool path against the project root; rejects paths escaping it.
 fn resolve_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
@@ -609,7 +742,11 @@ pub fn execute(
     };
 
     match tool {
-        Tool::ReadFile { path } => {
+        Tool::ReadFile {
+            path,
+            offset,
+            limit,
+        } => {
             let p = match resolve_path(root, path) {
                 Ok(p) => p,
                 Err(e) => {
@@ -619,17 +756,24 @@ pub fn execute(
                     return ToolResult::err_code(ErrorCode::FileNotFound, e);
                 }
             };
-            match std::fs::metadata(&p) {
+            let md = match std::fs::metadata(&p) {
                 Ok(md) if md.is_dir() => {
                     return ToolResult::err_code(
                         ErrorCode::InvalidArguments,
                         format!("is a directory: {path}"),
                     );
                 }
+                Ok(md) => md,
                 Err(e) => {
                     return ToolResult::err_code(ErrorCode::FileNotFound, format!("{path}: {e}"));
                 }
-                _ => {}
+            };
+            // Checked before reading, so a huge file is never loaded at all.
+            if md.len() > READ_CAP {
+                return ToolResult::err_code(
+                    ErrorCode::FileTooLarge,
+                    format!("{path}: file too large ({} bytes)", md.len()),
+                );
             }
             match std::fs::read(&p) {
                 Ok(bytes) => {
@@ -639,13 +783,8 @@ pub fn execute(
                             format!("{}: binary file ({} bytes, not shown)", path, bytes.len()),
                         );
                     }
-                    if bytes.len() as u64 > READ_CAP {
-                        return ToolResult::err_code(
-                            ErrorCode::FileTooLarge,
-                            format!("{path}: file too large ({})", bytes.len()),
-                        );
-                    }
-                    ToolResult::ok(String::from_utf8_lossy(&bytes).into_owned())
+                    let text = String::from_utf8_lossy(&bytes);
+                    ToolResult::ok(chunk_text(path, &text, *offset, *limit))
                 }
                 Err(e) => ToolResult::err_code(ErrorCode::ExecutionFailed, format!("{path}: {e}")),
             }
@@ -822,11 +961,15 @@ mod tests {
     #[test]
     fn approval_policy() {
         assert!(needs_approval(&Tool::ReadFile {
-            path: "src/a.ts".into()
+            path: "src/a.ts".into(),
+            offset: None,
+            limit: None,
         })
         .is_none());
         assert!(needs_approval(&Tool::ReadFile {
-            path: ".env".into()
+            path: ".env".into(),
+            offset: None,
+            limit: None,
         })
         .is_some());
         assert!(needs_approval(&Tool::WriteFile {
@@ -869,12 +1012,15 @@ mod tests {
         let r = execute(
             &Tool::ReadFile {
                 path: "hello.txt".into(),
+                offset: None,
+                limit: None,
             },
             Some(&dir),
             None,
         );
         assert!(r.ok);
-        assert_eq!(r.output.as_deref(), Some("bridge hi"));
+        // Single-chunk reads are numbered but carry no footer.
+        assert_eq!(r.output.as_deref(), Some("   1| bridge hi\n"));
 
         // list directory
         let r = execute(&Tool::ListDirectory { path: ".".into() }, Some(&dir), None);
@@ -905,6 +1051,8 @@ mod tests {
         let r = execute(
             &Tool::ReadFile {
                 path: "../../etc/hosts".into(),
+                offset: None,
+                limit: None,
             },
             Some(&dir),
             None,
@@ -964,7 +1112,11 @@ mod tests {
     /// a `Tool` variant without a `SPECS` row fails to compile here.
     fn every_variant() -> Vec<Tool> {
         let all = vec![
-            Tool::ReadFile { path: "a".into() },
+            Tool::ReadFile {
+                path: "a".into(),
+                offset: None,
+                limit: None,
+            },
             Tool::WriteFile {
                 path: "a".into(),
                 content: String::new(),
@@ -1077,7 +1229,9 @@ mod tests {
     fn describe_keeps_the_summary_format() {
         assert_eq!(
             describe(&Tool::ReadFile {
-                path: "src/a.ts".into()
+                path: "src/a.ts".into(),
+                offset: None,
+                limit: None,
             }),
             "read_file src/a.ts"
         );
@@ -1123,5 +1277,78 @@ mod tests {
         // run_command's pattern makes the quote optional, so unquoted parens
         // anywhere in this text are enough to fire it.
         assert!(!text.contains("(shell command)"));
+    }
+
+    #[test]
+    fn small_file_reads_whole_with_no_footer() {
+        let out = chunk_text("a.txt", "one\ntwo\nthree\n", None, None);
+        assert_eq!(out, "   1| one\n   2| two\n   3| three\n");
+    }
+
+    #[test]
+    fn empty_file_is_reported_not_blank() {
+        assert_eq!(chunk_text("a.txt", "", None, None), "[a.txt is empty]\n");
+    }
+
+    #[test]
+    fn large_file_pages_and_names_the_next_call() {
+        let text = (1..=1000).map(|i| format!("line {i}\n")).collect::<String>();
+
+        let first = chunk_text("big.txt", &text, None, None);
+        assert!(first.starts_with("   1| line 1\n"), "{first:.40}");
+        assert!(first.contains(&format!("{:>4}| line {}\n", CHUNK_LINES, CHUNK_LINES)));
+        assert!(!first.contains(&format!("| line {}\n", CHUNK_LINES + 1)));
+        assert!(first.contains("[chunk 1 of 3 · lines 1-400 of 1000"));
+        assert!(first.contains(r#"[to continue, call: read_file("big.txt", 401)]"#));
+
+        // Following the footer must land exactly where the last chunk stopped.
+        let second = chunk_text("big.txt", &text, Some(401), None);
+        assert!(second.starts_with(" 401| line 401\n"), "{second:.40}");
+        assert!(second.contains("[chunk 2 of 3 · lines 401-800 of 1000"));
+
+        let third = chunk_text("big.txt", &text, Some(801), None);
+        assert!(third.contains("[chunk 3 of 3 · lines 801-1000 of 1000"));
+        assert!(third.contains("[end of file]"));
+        assert!(!third.contains("to continue"));
+    }
+
+    #[test]
+    fn chunk_is_bounded_by_bytes_not_just_lines() {
+        // 100 lines of 1KB each: the line budget is 400, so bytes must be what
+        // stops it, or one chunk would blow past the composer cap.
+        let text = (0..100)
+            .map(|_| format!("{}\n", "x".repeat(1024)))
+            .collect::<String>();
+        let out = chunk_text("wide.txt", &text, None, None);
+        assert!(out.len() < CHUNK_BYTES * 2, "chunk was {} bytes", out.len());
+        assert!(out.contains("to continue"));
+    }
+
+    #[test]
+    fn one_overlong_line_still_makes_progress() {
+        // A minified bundle is a single line far over CHUNK_BYTES. Returning an
+        // empty chunk would leave the AI looping on the same offset forever.
+        let text = format!("{}\nsecond\n", "y".repeat(CHUNK_BYTES * 3));
+        let out = chunk_text("min.js", &text, None, None);
+        assert!(out.starts_with("   1| yyy"));
+        assert!(out.contains(r#"read_file("min.js", 2)"#));
+    }
+
+    #[test]
+    fn offset_past_the_end_is_clamped_not_an_error() {
+        // The AI guesses at file length; stranding it on a stale offset is worse
+        // than showing the last line.
+        let out = chunk_text("a.txt", "one\ntwo\n", Some(99), None);
+        assert!(out.contains("| two"), "{out}");
+    }
+
+    #[test]
+    fn explicit_limit_is_honoured() {
+        let text = (1..=50).map(|i| format!("line {i}\n")).collect::<String>();
+        let out = chunk_text("a.txt", &text, Some(10), Some(5));
+        assert!(out.starts_with("  10| line 10\n"), "{out:.40}");
+        assert!(out.contains("  14| line 14\n"));
+        assert!(!out.contains("line 15"));
+        assert!(out.contains(r#"read_file("a.txt", 15)"#));
     }
 }

@@ -104,7 +104,9 @@ fn tool_meta(tool: &crate::bridge::Tool) -> serde_json::Value {
     let name = crate::bridge::tool_name(tool);
     let mut meta = json!({"tool": name});
     match tool {
-        Tool::ReadFile { path } | Tool::WriteFile { path, .. } | Tool::ListDirectory { path } => {
+        Tool::ReadFile { path, .. }
+        | Tool::WriteFile { path, .. }
+        | Tool::ListDirectory { path } => {
             meta["path"] = json!(path);
         }
         Tool::RunCommand { command } => {
@@ -133,9 +135,19 @@ fn parse_tool_call_v2(
             .map(|s| s.to_string())
             .ok_or_else(|| format!("missing '{key}' argument"))
     };
+    // Line numbers arrive as a JSON number from our own parser, but a web AI
+    // writing raw JSON often quotes them.
+    let u32_arg = |key: &str| -> Option<u32> {
+        args[key]
+            .as_u64()
+            .or_else(|| args[key].as_str().and_then(|s| s.trim().parse().ok()))
+            .map(|n| n.min(u32::MAX as u64) as u32)
+    };
     match spec.name {
         "read_file" => Ok(crate::bridge::Tool::ReadFile {
             path: str_arg("path")?,
+            offset: u32_arg("offset"),
+            limit: u32_arg("limit"),
         }),
         "write_file" => Ok(crate::bridge::Tool::WriteFile {
             path: str_arg("path")?,
