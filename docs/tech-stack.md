@@ -33,7 +33,7 @@ The developer runs their local agent (Claude Code, etc.) in their **own** termin
 ## Web AI Bridge — Browser Extension + Local IPC
 
 - A **browser extension** (Chrome/Firefox) talks to the desktop app over a localhost/local channel (native messaging or WebSocket).
-- The extension injects the handoff into the web chat (ChatGPT / Claude.ai / Gemini) and relays **tool calls** (`read_file`, `write_file`, `run_command`) between the web AI and the local Rust core.
+- The extension injects the handoff into the web chat (ChatGPT / Claude.ai / Gemini / Grok) and relays **tool calls** (`read_file`, `write_file`, `run_command`) between the web AI and the local Rust core.
 - The Rust core executes tool calls locally (with permission checks) — `run_command` runs in a one-shot PTY and its output **streams live into the app's terminal pane** — and returns results via the extension into the web chat.
 
 ## Why Not C for the OS Layer

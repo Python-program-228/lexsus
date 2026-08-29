@@ -95,7 +95,7 @@ export default function FailoverPanel() {
     });
   }
 
-  async function deliver(target: "chatgpt" | "claudeai" | "gemini" | "local") {
+  async function deliver(target: "chatgpt" | "claudeai" | "gemini" | "grok" | "local") {
     try {
       await failoverDeliver(target);
       setWebEvent(null);
@@ -211,6 +211,9 @@ export default function FailoverPanel() {
               </Button>
               <Button size="sm" onClick={() => void deliver("gemini")}>
                 Continue on Gemini
+              </Button>
+              <Button size="sm" onClick={() => void deliver("grok")}>
+                Continue on Grok
               </Button>
               <Button variant="outline" size="sm" onClick={() => void deliver("local")}>
                 <HandIcon /> Hand back to local

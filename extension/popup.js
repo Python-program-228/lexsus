@@ -51,7 +51,7 @@ handoffBtn.addEventListener("click", () => {
     if (replied) return;
     replied = true;
     msg.textContent = res?.ok
-      ? "handoff sent \u2014 open chatgpt.com"
+      ? "handoff sent \u2014 open your web AI tab"
       : res?.error ?? "failed";
   });
   setTimeout(() => {
@@ -64,14 +64,20 @@ handoffBtn.addEventListener("click", () => {
 
 // Prime an open chat with the tool list. Without this, a chat only learns
 // which tools exist if it received a handoff.
+//
+// Keyed by hostname fragment, mirroring TARGET_HOSTS in background.js. A tab
+// on none of them falls through to chatgpt, which is also the default target.
+const TARGET_BY_URL = [
+  ["claude.ai", "claudeai"],
+  ["gemini.google.com", "gemini"],
+  ["grok.com", "grok"],
+  ["chatgpt.com", "chatgpt"],
+];
+
 manifestBtn.addEventListener("click", () => {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const url = tabs?.[0]?.url ?? "";
-    const target = url.includes("claude.ai")
-      ? "claudeai"
-      : url.includes("gemini.google.com")
-        ? "gemini"
-        : "chatgpt";
+    const target = TARGET_BY_URL.find(([frag]) => url.includes(frag))?.[1] ?? "chatgpt";
     chrome.runtime.sendMessage({ type: "send-manifest", target }, (res) => {
       msg.textContent = res?.ok ? "tool manifest sent" : (res?.error ?? "failed");
     });

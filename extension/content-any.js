@@ -1,5 +1,5 @@
-// AI Continuity Bridge — content script v2.0 for claude.ai and gemini.google.com.
-// Premium dark-mode UI: status pill, tool cards, result blocks, terminal.
+// AI Continuity Bridge — content script v2.0 for the non-ChatGPT web AIs:
+// claude.ai, gemini.google.com and grok.com.
 //
 // The tool vocabulary — names, aliases, parsers, timeouts, prompt text —
 // lives in tool-spec.js, shared with content.js (chatgpt.com) and
@@ -12,6 +12,7 @@
     const h = location.hostname;
     if (h.includes("claude.ai")) return "claudeai";
     if (h.includes("gemini.google.com")) return "gemini";
+    if (h.includes("grok.com")) return "grok";
     return "other";
   })();
 
@@ -21,17 +22,26 @@
   const S = window.ACBToolSpec;
 
   // ── DOM selectors per host ──────────────────────────────────────
+  //
+  // Each value is a comma-separated candidate list, most specific first, so a
+  // site redesign degrades instead of breaking outright. COMPS and SUBMIT may
+  // end in a generic fallback; MESSAGES must NOT — `scan()` reads the last
+  // matching node, so a selector loose enough to match the composer would make
+  // our own inserted results re-trigger themselves.
   const COMPS = {
     claudeai: 'div[contenteditable="true"]',
     gemini: 'div.ql-editor[contenteditable="true"], rich-textarea div[contenteditable="true"], div[contenteditable="true"]',
+    grok: 'form textarea, textarea[aria-label], main textarea, textarea, div[contenteditable="true"]',
   };
   const SUBMIT = {
     claudeai: 'button[aria-label="Send message"], button[aria-label="Send"]',
     gemini: 'button[aria-label="Send message"], button[data-test-id="send-button"]',
+    grok: 'button[type="submit"], button[aria-label="Submit"], button[aria-label="Send message"]',
   };
   const MESSAGES = {
     claudeai: ".font-claude-message",
     gemini: "model-response .markdown-content, .model-response-text, .markdown-content",
+    grok: ".response-content-markdown, .message-bubble, [data-testid='message-content']",
   };
 
   // ── Handoff prompt ──────────────────────────────────────────────
@@ -251,6 +261,7 @@
   const TARGET_LABEL = {
     claudeai: "Continue with Claude.ai",
     gemini: "Continue with Gemini",
+    grok: "Continue with Grok",
     chatgpt: "Continue with ChatGPT",
   };
 

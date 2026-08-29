@@ -14,7 +14,7 @@
 
 **[简体中文](README.zh-CN.md) · English**
 
-A local-first Tauri + Rust desktop app and Chrome extension that turns any **web AI — ChatGPT, Claude, Gemini — into a real coding agent on your machine**. When your local agent (like Claude Code) hits its usage limit, crashes, or you just want to switch, Lexsus captures your real project state and hands the work off — so the web AI can **read your files, write files, and run terminal commands**, and you never re-explain the project.
+A local-first Tauri + Rust desktop app and Chrome extension that turns any **web AI — ChatGPT, Claude, Gemini, Grok — into a real coding agent on your machine**. When your local agent (like Claude Code) hits its usage limit, crashes, or you just want to switch, Lexsus captures your real project state and hands the work off — so the web AI can **read your files, write files, and run terminal commands**, and you never re-explain the project.
 
 </div>
 
@@ -44,7 +44,7 @@ flowchart LR
         P --> T["Live activity trace + single command terminal"]
         X["Chrome extension"] <-->|"ws://127.0.0.1:45241 · 6-digit pairing"| P
     end
-    X <-->|"read / write / run tool calls"| W["Any web AI — ChatGPT · Claude.ai · Gemini"]
+    X <-->|"read / write / run tool calls"| W["Any web AI — ChatGPT · Claude.ai · Gemini · Grok"]
 ```
 
 1. **Capture** — the app records real file, git, and terminal activity into a lossless Session Archive (Layer 1).
@@ -117,7 +117,7 @@ Deny** before touching disk or shell. The full wire protocol is specified in
 ```
 ├── src/                    # React + TypeScript frontend (Tauri shell)
 ├── src-tauri/              # Rust core — git2, portable-pty, notify, rusqlite, local WebSocket
-├── extension/              # Chrome MV3 extension (ChatGPT · Claude.ai · Gemini)
+├── extension/              # Chrome MV3 extension (ChatGPT · Claude.ai · Gemini · Grok)
 ├── compression-service/    # Optional Python FastAPI context compression (Layer 3)
 ├── docs/                   # Architecture, protocol v2, tech stack, UI design
 ├── requirements/           # Product requirements, MVP scope, trade-offs
