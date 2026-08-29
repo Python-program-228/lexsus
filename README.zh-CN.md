@@ -14,7 +14,7 @@
 
 **简体中文（默认）** · [English](README.md)
 
-一款本地优先的 Tauri + Rust 桌面应用与 Chrome 扩展，能把任意**网页版 AI —— ChatGPT、Claude、Gemini —— 变成一台真正在你机器上工作的编码智能体**。当本地编码智能体（如 Claude Code）用量耗尽、崩溃，或你只是想换个工具时，Lexsus 会捕获你真实的项目状态并完成交接，让网页 AI 可以**读取文件、写入文件、运行终端命令**，而你永远不必重新解释一遍项目。
+一款本地优先的 Tauri + Rust 桌面应用与 Chrome 扩展，能把任意**网页版 AI —— ChatGPT、Claude、Gemini、Grok —— 变成一台真正在你机器上工作的编码智能体**。当本地编码智能体（如 Claude Code）用量耗尽、崩溃，或你只是想换个工具时，Lexsus 会捕获你真实的项目状态并完成交接，让网页 AI 可以**读取文件、写入文件、运行终端命令**，而你永远不必重新解释一遍项目。
 
 </div>
 
@@ -44,7 +44,7 @@ flowchart LR
         P --> T["实时活动追踪 + 唯一命令终端"]
         X["Chrome 扩展"] <-->|"ws://127.0.0.1:45241 · 6 位配对码"| P
     end
-    X <-->|"read / write / run 工具调用"| W["任意网页 AI —— ChatGPT · Claude.ai · Gemini"]
+    X <-->|"read / write / run 工具调用"| W["任意网页 AI —— ChatGPT · Claude.ai · Gemini · Grok"]
 ```
 
 1. **捕获**——应用将真实的文件、Git 与终端活动记录为无损的会话归档（第 1 层）。
@@ -112,7 +112,7 @@ uvicorn main:app --port 8000 --app-dir compression-service
 ```
 ├── src/                    # React + TypeScript 前端（Tauri 外壳）
 ├── src-tauri/              # Rust 核心 —— git2、portable-pty、notify、rusqlite、本地 WebSocket
-├── extension/              # Chrome MV3 扩展（ChatGPT · Claude.ai · Gemini）
+├── extension/              # Chrome MV3 扩展（ChatGPT · Claude.ai · Gemini · Grok）
 ├── compression-service/    # 可选 Python FastAPI 上下文压缩服务（第 3 层）
 ├── docs/                   # 架构、协议 v2、技术栈、UI 设计
 ├── requirements/           # 产品需求、MVP 范围、取舍记录
