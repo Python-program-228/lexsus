@@ -62,14 +62,7 @@
   // ── Auto-insert & toast ─────────────────────────────────────────
   const AUTO_INSERT_TOOLS = new Set(["read_file", "list_directory", "git_status"]);
 
-  function showToast(text) {
-    const t = document.createElement("div");
-    t.className = "acb-status-pill";
-    t.setAttribute("data-state", "connected");
-    t.innerHTML = `<span class="acb-status-dot" style="background:#10a37f"></span><span class="acb-status-text">${C.escapeHtml(text)}</span>`;
-    document.body.appendChild(t);
-    setTimeout(() => t.remove(), 2000);
-  }
+  // ── Tool capture (v2: supports <acb_tool> tags, fenced blocks, function calls) ──
 
   // ── Tool capture (v2: supports <acb_tool> tags, fenced blocks, function calls) ──
 
@@ -301,6 +294,7 @@
     if (sentSigs.has(sig)) return;
     sentSigs.add(sig);
     if (sentSigs.size > 200) sentSigs.delete(sentSigs.values().next().value);
+    showWorkingStage(tool);
     chrome.runtime.sendMessage({ type: "tool", tool }).catch(() => {});
   }
 
@@ -365,6 +359,39 @@
     }
     return statusPill;
   }
+
+  // ── Stage indicator (live tool progress) ────────────────────────
+  let stage = null;
+  function ensureStage() {
+    if ((!stage || !stage.el.isConnected) && C) {
+      stage = new C.ACBStageIndicator();
+      stage.mount(document.body);
+    }
+    return stage;
+  }
+  function stageLabel(tool) {
+    const name = (tool && (tool.name || tool.tool)) || "";
+    const args = (tool && tool.arguments) || {};
+    switch (name) {
+      case "read_file":
+        return `Reading ${args.path || "file"}`;
+      case "write_file":
+        return `Writing ${args.path || "file"}`;
+      case "run_command":
+        return `Running ${args.command || "command"}`;
+      case "list_directory":
+        return `Listing ${args.path || "directory"}`;
+      case "git_status":
+        return "Fetching git status";
+      default:
+        return `Fetching ${name}`;
+    }
+  }
+  const showWorkingStage = (tool) => ensureStage()?.setStage(stageLabel(tool), "working");
+  const markStageDone = () => ensureStage()?.setStage("Finished \u2713", "done");
+  const markStageInserted = () => ensureStage()?.setStage("Inserted \u2713", "done");
+  const markStageFailed = () => ensureStage()?.setStage("Failed \u2717", "error");
+  const markStageAwait = () => ensureStage()?.setStage("Awaiting approval\u2026", "working");
 
   // ── Stacked widget management (iOS-style) ───────────────────────
   const MAX_VISIBLE = 3;
@@ -432,6 +459,7 @@
       const meta = msg.meta || {};
 
       if (status === "pending") {
+        markStageAwait();
         const toolObj = { name: meta.tool || "tool", arguments: meta };
         const card = new C.ACBToolCard(toolObj, msg.id);
         card.onAction((action) => {
@@ -447,9 +475,11 @@
       }
 
       if (status === "denied" || status === "timeout") {
+        markStageFailed();
         const resultBlock = new C.ACBResultBlock(
           { ok: false, output: error.message || status },
           meta.tool || "tool",
+          { detail: meta.path || meta.command || "", errorCode: error.code || "" },
         );
         resultBlock.mount(root);
         limitVisibleWidgets();
@@ -457,9 +487,11 @@
       }
 
       if (status === "error") {
+        markStageFailed();
         const resultBlock = new C.ACBResultBlock(
           { ok: false, output: error.message || "Unknown error" },
           meta.tool || "tool",
+          { detail: meta.path || meta.command || "", errorCode: error.code || "" },
         );
         resultBlock.mount(root);
         limitVisibleWidgets();
@@ -480,13 +512,14 @@
         });
         terminal.mount(root);
         limitVisibleWidgets();
+        markStageDone();
         return;
       }
 
       // Auto-insert read-only tools (read_file, list_directory, git_status)
       if (AUTO_INSERT_TOOLS.has(meta.tool) && result.output) {
         insertIntoComposer(result.output);
-        showToast(`${meta.tool} result inserted`);
+        markStageInserted();
         return;
       }
 
@@ -501,6 +534,7 @@
       });
       resultBlock.mount(root);
       limitVisibleWidgets();
+      markStageDone();
       return;
     }
 
@@ -517,6 +551,7 @@
 
     if (r.pending) {
       const card = new C.ACBToolCard(msg.tool || {}, msg.id);
+      markStageAwait();
       card.onAction((action) => {
         chrome.runtime.sendMessage({
           type: "approve",
@@ -542,13 +577,14 @@
       });
       terminal.mount(root);
       limitVisibleWidgets();
+      r.ok ? markStageDone() : markStageFailed();
       return;
     }
 
     // Auto-insert read-only tools (read_file, list_directory, git_status)
     if (r.ok && AUTO_INSERT_TOOLS.has(toolName) && r.output) {
       insertIntoComposer(r.output);
-      showToast(`${toolName} result inserted`);
+      markStageInserted();
       return;
     }
 
@@ -564,6 +600,7 @@
     });
     result.mount(root);
     limitVisibleWidgets();
+    r.ok ? markStageDone() : markStageFailed();
   }
 
   // ── Message listener ────────────────────────────────────────────
@@ -571,9 +608,8 @@
     if (msg.type === "handoff" && msg.payload) showHandoffCard(msg.payload);
     if (msg.type === "handoff-error") {
       const el = document.createElement("div");
-      el.className = "acb-status-pill";
-      el.setAttribute("data-state", "error");
-      el.innerHTML = `<span class="acb-status-dot" style="background:#dc2626"></span><span class="acb-status-text">Handoff failed: ${C.escapeHtml(msg.error || "unknown error")}</span>`;
+      el.className = "acb-toast";
+      el.innerHTML = `<span class="acb-status-dot"></span><span class="acb-status-text">Handoff failed: ${C.escapeHtml(msg.error || "unknown error")}</span>`;
       document.body.appendChild(el);
       setTimeout(() => el.remove(), 8000);
     }

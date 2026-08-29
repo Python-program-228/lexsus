@@ -109,6 +109,131 @@
 }
 
 /* ================================================================
+   STAGE INDICATOR — live tool progress chip
+   ================================================================ */
+
+.acb-stage {
+  position: fixed;
+  z-index: var(--acb-z);
+  pointer-events: auto;
+  top: 52px;
+  right: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 340px;
+  padding: 5px 10px;
+  background: var(--acb-bg);
+  border: 1px solid var(--acb-border);
+  border-radius: 9999px;
+  font-family: var(--acb-font-ui);
+  font-size: 11px;
+  color: var(--acb-text-muted);
+  cursor: default;
+  user-select: none;
+  transition: opacity 200ms cubic-bezier(0.2, 0, 0, 1), transform 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.acb-stage-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+
+.acb-stage-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.acb-stage-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.acb-stage[data-state="working"] {
+  border-color: var(--acb-pending-border);
+  color: var(--acb-text);
+}
+
+.acb-stage[data-state="working"] .acb-stage-icon {
+  color: var(--acb-amber);
+  animation: acb-spin 900ms linear infinite;
+}
+
+.acb-stage[data-state="done"] {
+  border-color: var(--acb-success-border);
+  color: var(--acb-green);
+  animation: acb-stage-out 200ms 2300ms cubic-bezier(0.2, 0, 0, 1) forwards;
+}
+
+.acb-stage[data-state="done"] .acb-stage-icon {
+  color: var(--acb-green);
+}
+
+.acb-stage[data-state="error"] {
+  border-color: var(--acb-error-border);
+  color: var(--acb-red);
+  animation: acb-stage-out 200ms 2300ms cubic-bezier(0.2, 0, 0, 1) forwards;
+}
+
+.acb-stage[data-state="error"] .acb-stage-icon {
+  color: var(--acb-red);
+}
+
+@keyframes acb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes acb-stage-out {
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* ================================================================
+   TOAST — transient messages (handoff errors etc.)
+   ================================================================ */
+
+.acb-toast {
+  position: fixed;
+  z-index: var(--acb-z);
+  pointer-events: auto;
+  top: 52px;
+  right: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 340px;
+  padding: 6px 10px;
+  background: var(--acb-error-bg);
+  border: 1px solid var(--acb-error-border);
+  border-radius: 9999px;
+  font-family: var(--acb-font-ui);
+  font-size: 11px;
+  color: var(--acb-red);
+  cursor: default;
+  user-select: none;
+  animation: acb-toast-in 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.acb-toast .acb-status-dot {
+  background: var(--acb-red);
+  flex-shrink: 0;
+}
+
+@keyframes acb-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* ================================================================
    WIDGET ROOT — iOS-style stacked container
    ================================================================ */
 
@@ -116,14 +241,14 @@
   position: fixed;
   z-index: var(--acb-z);
   pointer-events: none;
-  top: 52px;
+  top: 96px;
   right: 16px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 6px;
   font-family: var(--acb-font-ui);
-  max-height: calc(100vh - 70px);
+  max-height: calc(100vh - 120px);
   overflow: hidden;
 }
 
@@ -536,6 +661,18 @@
   color: var(--acb-text-dim);
 }
 
+.acb-result-code {
+  font-family: var(--acb-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--acb-error, #ef4444);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
 .acb-result-content {
   padding: 8px 14px;
   overflow-x: auto;
@@ -819,5 +956,16 @@
   .acb-status-pill {
     top: 8px;
     right: 8px;
+  }
+
+  .acb-stage {
+    top: 44px;
+    right: 8px;
+  }
+
+  .acb-toast {
+    top: 44px;
+    right: 8px;
+    max-width: calc(100vw - 16px);
   }
 }

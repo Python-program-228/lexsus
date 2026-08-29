@@ -72,6 +72,52 @@
     }
   }
 
+  // ── Stage Indicator (live tool progress) ────────────────────────
+  const STAGE_SPINNER_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+  const STAGE_CHECK_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+  const STAGE_X_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+
+  class ACBStageIndicator {
+    constructor() {
+      this.el = el("div", { class: "acb-stage", "data-state": "working" });
+      this.icon = el("span", { class: "acb-stage-icon" });
+      this.text = el("span", { class: "acb-stage-text" });
+      this.el.appendChild(this.icon);
+      this.el.appendChild(this.text);
+      this._clearTimer = null;
+    }
+    setStage(text, state) {
+      if (this._clearTimer) {
+        clearTimeout(this._clearTimer);
+        this._clearTimer = null;
+      }
+      this.el.setAttribute("data-state", state || "working");
+      this.icon.innerHTML =
+        state === "done" ? STAGE_CHECK_SVG : state === "error" ? STAGE_X_SVG : STAGE_SPINNER_SVG;
+      this.text.textContent = text;
+      if (state === "done" || state === "error") {
+        this._clearTimer = setTimeout(() => this.clear(), 2500);
+      }
+    }
+    clear() {
+      if (this._clearTimer) {
+        clearTimeout(this._clearTimer);
+        this._clearTimer = null;
+      }
+      this.el.remove();
+    }
+    mount(root) {
+      root.appendChild(this.el);
+      return this;
+    }
+    destroy() {
+      this.clear();
+    }
+  }
+
   // ── Tool Card (approval pending) ─────────────────────────────────
   class ACBToolCard {
     constructor(tool, msgId) {
@@ -191,13 +237,16 @@
 
   // ── Result Block ─────────────────────────────────────────────────
   class ACBResultBlock {
-    constructor(result, toolName) {
+    constructor(result, toolName, opts) {
       this.result = result;
       this.toolName = toolName;
+      this.detail = (opts && opts.detail) || "";
+      this.errorCode = (opts && opts.errorCode) || "";
       this.el = el("div", {
         class: "acb-widget acb-result-block",
         "data-state": result.ok ? "success" : "error",
-        "data-expanded": "false",
+        // Errors expand fully so the real cause is visible immediately.
+        "data-expanded": result.ok ? "false" : "true",
       });
       this._build();
     }
@@ -211,7 +260,11 @@
         ? '<svg class="acb-result-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M8 12l2.5 2.5L16 9.5"/></svg>'
         : '<svg class="acb-result-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>';
       const label = ok ? "Done" : "Failed";
-      header.innerHTML = `${checkSvg}<span>${label}</span><span class="acb-result-meta">${this.toolName}</span>`;
+      const metaParts = [this.toolName, this.detail].filter(Boolean).join(" ");
+      const codeHtml = this.errorCode
+        ? `<span class="acb-result-code">${escapeHtml(this.errorCode)}</span>`
+        : "";
+      header.innerHTML = `${checkSvg}<span>${label}</span><span class="acb-result-meta">${escapeHtml(metaParts)}</span>${codeHtml}`;
       this._closeBtn = createCloseBtn();
       header.appendChild(this._closeBtn);
       this.el.appendChild(header);
@@ -384,6 +437,7 @@
   // ── Exports ──────────────────────────────────────────────────────
   window.ACBComponents = {
     ACBStatusPill,
+    ACBStageIndicator,
     ACBToolCard,
     ACBResultBlock,
     ACBTerminal,
