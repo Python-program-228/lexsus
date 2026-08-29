@@ -96,42 +96,63 @@ fn make_tool_result_v1(id: u64, result: &crate::bridge::ToolResult) -> String {
     .to_string()
 }
 
-/// Extract the tool name and arguments from a v1 Tool enum for v2 response metadata.
+/// Response metadata for a v2 tool_result. The tool name comes from the
+/// spec table; the `path` / `command` keys are read directly by the
+/// extension's result renderer (`content.js`), so they stay as-is.
 fn tool_meta(tool: &crate::bridge::Tool) -> serde_json::Value {
+    use crate::bridge::Tool;
+    let name = crate::bridge::tool_name(tool);
+    let mut meta = json!({"tool": name});
     match tool {
-        crate::bridge::Tool::ReadFile { path } => json!({"tool": "read_file", "path": path}),
-        crate::bridge::Tool::WriteFile { path, .. } => json!({"tool": "write_file", "path": path}),
-        crate::bridge::Tool::RunCommand { command } => json!({"tool": "run_command", "command": command}),
-        crate::bridge::Tool::ListDirectory { path } => json!({"tool": "list_directory", "path": path}),
-        crate::bridge::Tool::GitStatus => json!({"tool": "git_status"}),
+        Tool::ReadFile { path } | Tool::WriteFile { path, .. } | Tool::ListDirectory { path } => {
+            meta["path"] = json!(path);
+        }
+        Tool::RunCommand { command } => {
+            meta["command"] = json!(command);
+        }
+        Tool::GitStatus | Tool::DescribeTool { .. } | Tool::ListTools => {}
     }
+    if let Some(detail) = crate::bridge::detail(tool) {
+        meta["detail"] = json!(detail);
+    }
+    meta
 }
 
-/// Parse a v2 tool_call message into a Tool enum.
-fn parse_tool_call_v2(tool_name: &str, args: &serde_json::Value) -> Result<crate::bridge::Tool, String> {
-    match tool_name {
-        "read_file" => {
-            let path = args["path"].as_str().ok_or("missing 'path' argument")?;
-            Ok(crate::bridge::Tool::ReadFile { path: path.to_string() })
-        }
-        "write_file" => {
-            let path = args["path"].as_str().ok_or("missing 'path' argument")?;
-            let content = args["content"].as_str().ok_or("missing 'content' argument")?;
-            Ok(crate::bridge::Tool::WriteFile {
-                path: path.to_string(),
-                content: content.to_string(),
-            })
-        }
-        "run_command" => {
-            let command = args["command"].as_str().ok_or("missing 'command' argument")?;
-            Ok(crate::bridge::Tool::RunCommand { command: command.to_string() })
-        }
-        "list_directory" => {
-            let path = args["path"].as_str().ok_or("missing 'path' argument")?;
-            Ok(crate::bridge::Tool::ListDirectory { path: path.to_string() })
-        }
+/// Parse a v2 tool_call message into a Tool enum. The name is resolved
+/// through the spec table's aliases first, because a web AI emits whatever
+/// name it happens to remember (`Read`, `bash`, `default_api.read_file`).
+fn parse_tool_call_v2(
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Result<crate::bridge::Tool, String> {
+    let spec = crate::bridge::spec_by_name(tool_name)
+        .ok_or_else(|| format!("unknown tool: {tool_name}"))?;
+    let str_arg = |key: &str| -> Result<String, String> {
+        args[key]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| format!("missing '{key}' argument"))
+    };
+    match spec.name {
+        "read_file" => Ok(crate::bridge::Tool::ReadFile {
+            path: str_arg("path")?,
+        }),
+        "write_file" => Ok(crate::bridge::Tool::WriteFile {
+            path: str_arg("path")?,
+            content: str_arg("content")?,
+        }),
+        "run_command" => Ok(crate::bridge::Tool::RunCommand {
+            command: str_arg("command")?,
+        }),
+        "list_directory" => Ok(crate::bridge::Tool::ListDirectory {
+            path: str_arg("path")?,
+        }),
         "git_status" => Ok(crate::bridge::Tool::GitStatus),
-        _ => Err(format!("unknown tool: {tool_name}")),
+        "describe_tool" => Ok(crate::bridge::Tool::DescribeTool {
+            name: str_arg("name")?,
+        }),
+        "list_tools" => Ok(crate::bridge::Tool::ListTools),
+        other => Err(format!("tool not implemented: {other}")),
     }
 }
 
@@ -227,15 +248,13 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                     Ok(t) => t,
                     Err(e) => {
                         let mut w = ws.lock().unwrap();
-                        let _ = w.send(Message::Text(
-                            make_tool_result_v2(
-                                id,
-                                "error",
-                                None,
-                                Some(json!({"code": "INVALID_ARGUMENTS", "message": e})),
-                                None,
-                            ),
-                        ));
+                        let _ = w.send(Message::Text(make_tool_result_v2(
+                            id,
+                            "error",
+                            None,
+                            Some(json!({"code": "INVALID_ARGUMENTS", "message": e})),
+                            None,
+                        )));
                         continue;
                     }
                 };
@@ -247,16 +266,32 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                     let result = crate::tool_call(&app, tool.clone(), "web");
                     let meta = tool_meta(&tool);
                     let (status, result_val, error_val) = if result.ok {
-                        ("success".to_string(), json!({"output": result.output, "bytes": result.output.as_ref().map(|s| s.len())}), serde_json::Value::Null)
+                        (
+                            "success".to_string(),
+                            json!({"output": result.output, "bytes": result.output.as_ref().map(|s| s.len())}),
+                            serde_json::Value::Null,
+                        )
                     } else if result.pending.is_some() {
-                        ("pending".to_string(), json!({"summary": result.pending}), serde_json::Value::Null)
+                        (
+                            "pending".to_string(),
+                            json!({"summary": result.pending}),
+                            serde_json::Value::Null,
+                        )
                     } else {
-                        ("error".to_string(), serde_json::Value::Null, json!({"code": "EXECUTION_FAILED", "message": result.error.unwrap_or_default()}))
+                        (
+                            "error".to_string(),
+                            serde_json::Value::Null,
+                            json!({"code": "EXECUTION_FAILED", "message": result.error.unwrap_or_default()}),
+                        )
                     };
                     let mut w = ws.lock().unwrap();
-                    let _ = w.send(Message::Text(
-                        make_tool_result_v2(&id, &status, Some(result_val), Some(error_val), Some(meta)),
-                    ));
+                    let _ = w.send(Message::Text(make_tool_result_v2(
+                        &id,
+                        &status,
+                        Some(result_val),
+                        Some(error_val),
+                        Some(meta),
+                    )));
                 });
             }
 
@@ -308,16 +343,32 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
 
                 let meta = None;
                 let (status, result_val, error_val) = if result.ok {
-                    ("success".to_string(), json!({"output": result.output}), serde_json::Value::Null)
+                    (
+                        "success".to_string(),
+                        json!({"output": result.output}),
+                        serde_json::Value::Null,
+                    )
                 } else if !allow {
-                    ("denied".to_string(), serde_json::Value::Null, json!({"code": "DENIED", "message": result.error.unwrap_or_default()}))
+                    (
+                        "denied".to_string(),
+                        serde_json::Value::Null,
+                        json!({"code": "DENIED", "message": result.error.unwrap_or_default()}),
+                    )
                 } else {
-                    ("error".to_string(), serde_json::Value::Null, json!({"code": "EXECUTION_FAILED", "message": result.error.unwrap_or_default()}))
+                    (
+                        "error".to_string(),
+                        serde_json::Value::Null,
+                        json!({"code": "EXECUTION_FAILED", "message": result.error.unwrap_or_default()}),
+                    )
                 };
                 let mut w = ws.lock().unwrap();
-                let _ = w.send(Message::Text(
-                    make_tool_result_v2(id_str, &status, Some(result_val), Some(error_val), meta),
-                ));
+                let _ = w.send(Message::Text(make_tool_result_v2(
+                    id_str,
+                    &status,
+                    Some(result_val),
+                    Some(error_val),
+                    meta,
+                )));
             }
 
             // ── Legacy v1: tool ─────────────────────────────────────
@@ -328,12 +379,10 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                     Ok(t) => t,
                     Err(e) => {
                         let mut w = ws.lock().unwrap();
-                        let _ = w.send(Message::Text(
-                            make_tool_result_v1(
-                                id,
-                                &crate::bridge::ToolResult::err(format!("bad tool payload: {e}")),
-                            ),
-                        ));
+                        let _ = w.send(Message::Text(make_tool_result_v1(
+                            id,
+                            &crate::bridge::ToolResult::err(format!("bad tool payload: {e}")),
+                        )));
                         continue;
                     }
                 };

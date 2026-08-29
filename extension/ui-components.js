@@ -32,6 +32,34 @@
     return btn;
   }
 
+  // Badge icons, looked up by tool name and falling back to the tool's
+  // group — so a new tool gets a sensible icon without touching this file.
+  const SVG = (body) =>
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+
+  const ICONS = {
+    // by group
+    Reading: SVG(
+      '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
+    ),
+    Editing: SVG(
+      '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>',
+    ),
+    Commands: SVG('<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>'),
+    Search: SVG('<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>'),
+    Git: SVG(
+      '<circle cx="12" cy="12" r="4"/><line x1="1.05" y1="12" x2="7" y2="12"/><line x1="17.01" y1="12" x2="22.96" y2="12"/>',
+    ),
+    Planning: SVG(
+      '<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+    ),
+    Meta: SVG('<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>'),
+    // per-tool overrides
+    list_directory: SVG(
+      '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+    ),
+  };
+
   // ── Status Pill ──────────────────────────────────────────────────
   class ACBStatusPill {
     constructor() {
@@ -119,9 +147,18 @@
   }
 
   // ── Tool Card (approval pending) ─────────────────────────────────
+  //
+  // Tool objects arrive in three shapes — a parsed v2 call, a v2 result's
+  // `meta`, and the legacy v1 serde enum — so normalization goes through
+  // the shared spec table rather than a per-shape ladder here.
   class ACBToolCard {
     constructor(tool, msgId) {
       this.tool = tool;
+      this.norm = (window.ACBToolSpec && window.ACBToolSpec.normalizeTool(tool)) || {
+        name: "unknown",
+        args: {},
+        spec: null,
+      };
       this.msgId = msgId;
       this.el = el("div", {
         class: "acb-widget acb-tool-card",
@@ -132,46 +169,37 @@
       this._build();
     }
     _toolName() {
-      if (this.tool.ReadFile) return "read_file";
-      if (this.tool.WriteFile) return "write_file";
-      if (this.tool.RunCommand) return "run_command";
-      if (this.tool.ListDirectory) return "list_directory";
-      if (this.tool.GitStatus != null) return "git_status";
-      return "unknown";
+      return this.norm.name;
     }
+    /** The path or command the call acts on, for the card header. */
     _toolDetail() {
-      const t = this.tool;
-      if (t.ReadFile) return t.ReadFile.path;
-      if (t.WriteFile) return t.WriteFile.path;
-      if (t.RunCommand) return t.RunCommand.command;
-      if (t.ListDirectory) return t.ListDirectory.path;
-      if (t.GitStatus != null) return "(status)";
-      return "";
+      const { args, spec } = this.norm;
+      if (spec) {
+        for (const arg of spec.args) {
+          if (arg.multiline) continue;
+          if (typeof args[arg.name] === "string") return args[arg.name];
+        }
+        // A v2 `meta` carries a pre-formatted detail when it has no args.
+        if (typeof args.detail === "string") return args.detail;
+        return spec.args.length === 0 ? `(${spec.group.toLowerCase()})` : "";
+      }
+      return args.path || args.command || args.detail || "";
     }
     _toolIcon() {
-      const icons = {
-        read_file:
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>',
-        write_file:
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
-        run_command:
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
-        list_directory:
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
-        git_status:
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><line x1="1.05" y1="12" x2="7" y2="12"/><line x1="17.01" y1="12" x2="22.96" y2="12"/></svg>',
-      };
-      return icons[this._toolName()] || "";
+      return ICONS[this._toolName()] || ICONS[this.norm.spec?.group] || "";
     }
     _build() {
       const name = this._toolName();
       const detail = this._toolDetail();
       const iconHtml = `<span class="acb-tool-badge-icon">${this._toolIcon()}</span>`;
+      // Colour comes from the tool's group, so a new tool needs no CSS;
+      // the name class is still emitted for per-tool overrides.
+      const group = this.norm.spec ? `group-${this.norm.spec.group.toLowerCase()}` : "";
 
       // Header — click to expand/collapse, close button
       const header = el("div", { class: "acb-widget-header" });
       header.innerHTML = `
-        <span class="acb-tool-badge ${name}">${iconHtml}${name}</span>
+        <span class="acb-tool-badge ${group} ${name}">${iconHtml}${name}</span>
         <span class="acb-tool-path">${escapeHtml(detail)}</span>
       `;
       this._closeBtn = createCloseBtn();
@@ -181,12 +209,15 @@
       // Body — preview + actions
       const body = el("div", { class: "acb-widget-body" });
 
-      if (this.tool.WriteFile) {
-        const preview = this.tool.WriteFile.content || "";
+      // Show what the call will do: the content to be written, or the
+      // command to be run. Nothing is more important on an approval card.
+      const multiline = this.norm.spec?.args.find((a) => a.multiline);
+      const preview = multiline ? this.norm.args[multiline.name] : null;
+      if (typeof preview === "string") {
         const previewEl = el("div", { class: "acb-tool-preview" }, []);
         previewEl.textContent = preview;
         body.appendChild(previewEl);
-      } else if (this.tool.RunCommand) {
+      } else if (name === "run_command" && detail) {
         const cmdEl = el("div", { class: "acb-tool-preview" });
         cmdEl.innerHTML = `<span style="color:var(--acb-text-dim)">$</span> ${escapeHtml(detail)}`;
         body.appendChild(cmdEl);

@@ -155,14 +155,29 @@ All messages follow this structure:
 
 ## 8. Tool Definitions
 
+Implemented today. Names are resolved through the shared spec table
+(`src-tauri/src/bridge.rs::SPECS`, mirrored in `extension/tool-spec.js`), which
+also accepts per-tool aliases — a model that emits `Read`, `bash` or
+`default_api.read_file` still lands on the right tool.
+
 | Tool | Required Args | Optional Args | Max Output | Approval |
 |------|---------------|---------------|------------|----------|
-| `read_file` | `path: string` | `offset, limit` | 512KB | Auto (unless sensitive) |
+| `read_file` | `path: string` | — | 512KB | Auto (unless sensitive) |
 | `write_file` | `path, content` | — | — | Always |
-| `run_command` | `command` | `cwd, timeout_ms` | 1MB | Always |
-| `list_directory` | `path` | `recursive, max_depth` | 256KB | Auto |
-| `search_files` | `query` | `path, glob, max_results` | 256KB | Auto |
+| `run_command` | `command` | — | 1MB | Always |
+| `list_directory` | `path` | — | 256KB | Auto |
 | `git_status` | — | — | 64KB | Auto |
+| `describe_tool` | `name` | — | — | Auto |
+| `list_tools` | — | — | — | Auto |
+
+`describe_tool` and `list_tools` answer from the spec table alone, so they work
+before a project is opened — an AI that has lost the manifest can always
+recover it.
+
+Reserved by the protocol but **not yet implemented** (the core returns
+`UNKNOWN_TOOL`): `search_files`/`grep`, `glob`, `edit_file`, the `git_*` write
+tools, and the `offset`/`limit`, `recursive`/`max_depth`, `cwd`/`timeout_ms`
+optional args above.
 
 ---
 
@@ -195,14 +210,18 @@ All messages follow this structure:
 
 **Timeout per Request:**
 
+Derived from the shared spec table, not hardcoded per call site.
+
 | Tool | Timeout | Retry |
 |------|---------|-------|
 | `read_file` | 10s | 1 |
 | `write_file` | 15s | 0 |
 | `run_command` | 120s | 0 |
 | `list_directory` | 10s | 1 |
-| `search_files` | 15s | 0 |
 | `git_status` | 10s | 1 |
+| `describe_tool` | 5s | 1 |
+| `list_tools` | 5s | 1 |
+| _unknown_ | 15s | 0 |
 
 ---
 

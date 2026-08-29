@@ -25,7 +25,7 @@ A local-first Tauri + Rust desktop app and Chrome extension that turns any **web
 | | Feature | What it means for you |
 |---|---|---|
 | 🔀 | **Handoff, not copy-paste** | One click packages the real state of your project — objective, decisions, failed attempts, constraints, changed files — into a prompt any web AI can continue from. Facts, not chat. |
-| 🛠️ | **Real coding-agent tools** | The web AI gets `read_file`, `write_file`, `run_command`, `list_directory`, `search_files`, `git_status` — executed locally by the Rust core, not simulated in the browser. |
+| 🛠️ | **Real coding-agent tools** | The web AI gets `read_file`, `write_file`, `run_command`, `list_directory`, `git_status` — executed locally by the Rust core, not simulated in the browser. It discovers them with `list_tools` and `describe_tool`, so a chat can be primed without a handoff. |
 | 👁️ | **Live activity trace** | Every read, write, and command the web AI performs shows up in real time, cross-checked against the filesystem watcher — nothing is claimed without evidence. |
 | 🛡️ | **Approval gates** | `write_file` and `run_command` pause for your **Allow / Deny**. Every command streams live into the app's single read-only terminal so you see exactly what runs. |
 | 🧠 | **Structured project memory** | Sessions are archived to embedded SQLite and distilled into objective, decisions, failed attempts, constraints, changed files, and heuristic progress. |
