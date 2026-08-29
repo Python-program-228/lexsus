@@ -26,6 +26,16 @@
 
   const CLOSE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
 
+  // `run_command` output is capped at 1MB by the core (bridge.rs) and
+  // `read_file` at 512KB — far more than a floating widget should paint.
+  const RENDER_CAP = 128 * 1024;
+
+  /** Trim text to what a widget will render, using the core's own marker. */
+  function capText(s) {
+    const t = String(s ?? "");
+    return t.length > RENDER_CAP ? t.slice(0, RENDER_CAP) + "\n[output truncated]" : t;
+  }
+
   function createCloseBtn() {
     const btn = el("button", { class: "acb-close", title: "Dismiss" });
     btn.innerHTML = CLOSE_SVG;
@@ -215,7 +225,7 @@
       const preview = multiline ? this.norm.args[multiline.name] : null;
       if (typeof preview === "string") {
         const previewEl = el("div", { class: "acb-tool-preview" }, []);
-        previewEl.textContent = preview;
+        previewEl.textContent = capText(preview);
         body.appendChild(previewEl);
       } else if (name === "run_command" && detail) {
         const cmdEl = el("div", { class: "acb-tool-preview" });
@@ -306,7 +316,7 @@
       const content = el("div", { class: "acb-result-content" });
       const pre = el("pre");
       const code = el("code");
-      code.textContent = output;
+      code.textContent = capText(output);
       pre.appendChild(code);
       content.appendChild(pre);
       body.appendChild(content);
@@ -376,9 +386,31 @@
       body.appendChild(this.footer);
       this.el.appendChild(body);
     }
+    /**
+     * Render the whole output at once. Callers have the complete text, so
+     * this is the normal path; `appendLine` exists for streaming.
+     */
+    setOutput(text) {
+      this._buf = String(text ?? "");
+      this._flush();
+    }
     appendLine(text) {
-      this.output.textContent += text + "\n";
-      this.output.scrollTop = this.output.scrollHeight;
+      this._buf = (this._buf ?? "") + text + "\n";
+      this._flush();
+    }
+    /**
+     * One DOM write and one layout per frame. Reading `scrollHeight` right
+     * after writing `textContent` forces a synchronous reflow, so doing it
+     * per line was O(n²) — ~20k forced layouts on a 1MB command output, which
+     * pegged the CPU and made the host page unresponsive.
+     */
+    _flush() {
+      if (this._raf) return;
+      this._raf = requestAnimationFrame(() => {
+        this._raf = null;
+        this.output.textContent = capText(this._buf);
+        this.output.scrollTop = this.output.scrollHeight;
+      });
     }
     finish(ok, elapsed) {
       const status = this.header.querySelector(".acb-terminal-status");

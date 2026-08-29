@@ -187,14 +187,37 @@ optional args above.
 
 1. `<acb_tool>` tags (highest reliability)
 2. Fenced JSON blocks (```acb` or ```json`)
-3. Function-call syntax (`read_file("path")`)
+3. Function-call syntax, **anchored to the start of a line** (`read_file("path")`)
 4. Inline JSON (lowest priority)
+
+**Function-call syntax must begin its line.** Leading list markers, blockquote
+arrows, backticks and `1.` ordinals are stripped first, but a call buried in a
+sentence is ignored. Matching anywhere in the line meant prose executed: "you
+can use `run_command`: npm test" opened a real approval card, and a bullet list
+naming `git_status` ran it. Zero-argument tools therefore require empty parens
+(`git_status()`, `list_tools()`).
+
+**The manifest is deliberately not in call syntax.** `list_tools` and
+`describe_tool` auto-insert their output into the chat, so the AI echoes it
+back into the scanner. Rendered as `name(args)`, every row was a live call and
+echoing the manifest executed the entire tool surface at once. Both
+`bridge.rs::tool_manifest` and the extension's `manifest()` emit an aligned
+`name  args  summary` table instead, and each is guarded by a test.
+
+**Result size caps.** A result is truncated to 24KB before it is inserted into
+the chat composer, with a `[truncated at N of M bytes]` marker naming the real
+size, and to 128KB before a widget renders it (`[output truncated]`, the same
+marker the core uses for oversized command output). The core's own caps —
+512KB for `read_file`, 1MB for `run_command` — are unchanged; these are display
+limits, because pushing 512KB into a rich-text composer froze the host page.
 
 **Streaming Safety:**
 - For `<acb_tool>` blocks: Wait for closing `</acb_tool>` tag
 - For fenced blocks: Wait for closing ``` before extracting
 - For function calls: Use balanced-paren matcher, wait for closing `)`
 - Debounce: 800ms after last DOM mutation before scanning
+- Mutations inside the extension's own UI (`#acb-root`, the stage indicator,
+  the status pill, toasts, the handoff overlay) do not schedule a scan
 
 **Deduplication:**
 - Content-script level: `Set<string>` of JSON-serialized tool calls (FIFO, 200 max)
