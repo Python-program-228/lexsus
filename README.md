@@ -98,11 +98,16 @@ The extension detects tool calls in the web chat and relays them to the Rust cor
   "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "type": "tool_call",
   "tool": "read_file",
-  "arguments": { "path": "src/App.tsx", "offset": 0, "limit": 1000 }
+  "arguments": { "path": "src/App.tsx", "offset": 401 }
 }
 ```
 
-`run_command` output streams back chunk-by-chunk and the write/run tools wait for your **Allow / Deny** before touching disk or shell. The full wire protocol is specified in [docs/protocol-v2.md](docs/protocol-v2.md).
+Large files come back one chunk at a time as numbered lines, with a footer
+naming the exact call that returns the next chunk — the AI pages through what it
+needs instead of being handed a whole file it can't absorb. `run_command` output
+streams back chunk-by-chunk and the write/run tools wait for your **Allow /
+Deny** before touching disk or shell. The full wire protocol is specified in
+[docs/protocol-v2.md](docs/protocol-v2.md).
 
 > [!NOTE]
 > **Status:** early-stage MVP — the core bridge works end-to-end (archive, facts, handoff, tool relay, live terminal). The compression service (`/compress`) is still a stub; a [5–10 developer validation](requirements/mvp-scope.md) comes before scaling features.

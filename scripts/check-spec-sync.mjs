@@ -120,6 +120,17 @@ const checks = [
   ["composer cap marks size", S.capForComposer("x".repeat(30000)).includes("truncated at 24576 of 30000")],
   ["composer cap passes small text through", S.capForComposer("hi") === "hi"],
   ["composer cap handles null", S.capForComposer(null) === ""],
+
+  // Chunked reads: the core's footer says `read_file("f", 401)`, so following
+  // it must parse — with 401 as a *number*, since the Rust side reads a u32.
+  ["chunk offset parses", S.parseToolLine('read_file("README.md", 401)')?.arguments.offset === 401],
+  ["chunk offset is a number", typeof S.parseToolLine('read_file("a.ts", 7)')?.arguments.offset === "number"],
+  ["path-only read still parses", S.parseToolLine('read_file("a.ts")')?.arguments.offset === undefined],
+  ["unterminated quote still parses", S.parseToolLine('read_file("a.ts')?.arguments.path === "a.ts"],
+  ["json offset number", S.parseJsonBlock('{"tool":"read_file","path":"a","offset":401}')?.arguments.offset === 401],
+  ["json offset quoted digits", S.parseJsonBlock('{"tool":"read_file","path":"a","offset":"401"}')?.arguments.offset === 401],
+  ["json offset garbage dropped", S.parseJsonBlock('{"tool":"read_file","path":"a","offset":"soon"}')?.arguments.offset === undefined],
+  ["json read_file still needs a path", S.parseJsonBlock('{"tool":"read_file","offset":2}') === null],
 ];
 
 // The manifest and the handoff prompt are pasted into the chat, so the AI
@@ -142,6 +153,19 @@ if (!jsonHits.includes("write_file")) {
 
 for (const [label, ok] of checks) {
   if (!ok) problems.push(`behaviour check failed: ${label}`);
+}
+
+// The chunk footer is auto-inserted into the chat, so the AI echoes it back.
+// It must NOT fire on its own — the model has to decide to page and write the
+// call itself. The leading `[` is what makes it inert (the anchor in
+// `parseToolLine` strips list markers, not brackets), so both halves of this
+// pairing matter: keep the format in sync with `chunk_text` in bridge.rs.
+const FOOTER = '[to continue, call: read_file("README.md", 401)]';
+if (!rust.includes('"[to continue, call: read_file(\\"{}\\", {})]\\n"')) {
+  problems.push("bridge.rs's chunk footer format changed — re-check the FOOTER inertness test");
+}
+if (S.parseToolLine(FOOTER) !== null) {
+  problems.push("chunk footer parses as a call — echoing a read would re-fire it");
 }
 
 if (problems.length) {

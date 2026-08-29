@@ -19,7 +19,9 @@
   // name       canonical wire name
   // variant    legacy v1 serde variant (`{"ReadFile":{...}}`)
   // aliases    other names a web AI might emit; resolved for JSON calls
-  // args       [{ name, hint?, required?, multiline? }]
+  // args       [{ name, hint?, required?, multiline?, type? }]
+  //            type: "int" is coerced with Number(); everything else stays a
+  //            string, because that is what the wire and the core expect.
   // approval   auto | sensitive-path | always | destructive
   // autoInsert read-only result → paste straight into the composer
   // timeoutMs  must match the Rust spec's timeout_ms
@@ -34,14 +36,19 @@
       name: "read_file",
       variant: "ReadFile",
       aliases: ["read", "view_file", "cat", "open_file"],
-      args: [{ name: "path", required: true }],
-      summary: "Read a file's contents",
+      args: [
+        { name: "path", required: true },
+        { name: "offset", hint: "offset?", required: false, type: "int" },
+      ],
+      summary: "Read a file as numbered lines, in chunks for large files",
       group: "Reading",
       approval: "sensitive-path",
       autoInsert: true,
       timeoutMs: 10000,
-      lineRe: /read_file\s*[(:]\s*["']([^"'\s)]+)/i,
-      lineArgs: ["path"],
+      // The closing quote stays optional (models truncate it); the trailing
+      // `, 401` is the chunk offset the core's footer tells them to send back.
+      lineRe: /read_file\s*[(:]\s*["']([^"'\s)]+)["']?\s*(?:,\s*(\d+))?/i,
+      lineArgs: ["path", "offset"],
       stage: { verb: "Reading", arg: "path", fallback: "file" },
     },
     {
@@ -233,6 +240,22 @@
   }
 
   /**
+   * Coerce one captured argument to the type its spec declares. Returns
+   * `undefined` when the value is unusable, so the required check can reject.
+   *
+   * Only `int` is special: a chunk offset arrives as a JSON number from a
+   * model writing raw JSON and as a digit string from `parseToolLine`.
+   */
+  function coerceArg(arg, raw) {
+    if (raw == null) return undefined;
+    if (arg && arg.type === "int") {
+      const n = Number(raw);
+      return Number.isFinite(n) ? Math.trunc(n) : undefined;
+    }
+    return typeof raw === "string" ? raw : undefined;
+  }
+
+  /**
    * Parse one JSON tool object. Arguments are accepted either nested under
    * `arguments` or flat on the object, since models emit both.
    */
@@ -249,12 +272,12 @@
     const src = obj.arguments && typeof obj.arguments === "object" ? obj.arguments : {};
     const args = {};
     for (const arg of spec.args) {
-      const raw = src[arg.name] ?? obj[arg.name];
-      if (typeof raw !== "string") {
+      const value = coerceArg(arg, src[arg.name] ?? obj[arg.name]);
+      if (value === undefined) {
         if (arg.required) return null;
         continue;
       }
-      args[arg.name] = raw;
+      args[arg.name] = value;
     }
     return { name: spec.name, arguments: args };
   }
@@ -281,12 +304,16 @@
       if (!m || m.index !== 0) continue;
       const args = {};
       spec.lineArgs.forEach((name, i) => {
-        if (m[i + 1] != null) args[name] = m[i + 1];
+        const value = coerceArg(
+          spec.args.find((a) => a.name === name),
+          m[i + 1],
+        );
+        if (value !== undefined) args[name] = value;
       });
       // A required argument the regex failed to capture means the model
       // wrote something we shouldn't guess at.
       for (const arg of spec.args) {
-        if (arg.required && typeof args[arg.name] !== "string") return null;
+        if (arg.required && args[arg.name] === undefined) return null;
       }
       return { name: spec.name, arguments: args };
     }
@@ -366,7 +393,9 @@
   /** The call form, for docs. NOT for anything the AI might echo back. */
   function callSyntax(spec) {
     if (spec.args.length === 0) return spec.lineRe ? `${spec.name}()` : spec.name;
-    const args = spec.args.map((a) => `"${a.hint || a.name}"`).join(", ");
+    const args = spec.args
+      .map((a) => (a.type === "int" ? a.hint || a.name : `"${a.hint || a.name}"`))
+      .join(", ");
     return `${spec.name}(${args})`;
   }
 
@@ -419,6 +448,13 @@
       '```',
       ``,
       `${gated.map((t) => t.name).join(" and ")} pause for the user's Allow/Deny — wait for the result rather than assuming it succeeded.`,
+      // The core numbers every read and pages large files; without this the AI
+      // treats the first chunk as the whole file and invents the rest.
+      `Reads come back as numbered lines ("   1| ..."). A large file arrives one`,
+      `chunk at a time and the chunk's final line names the exact call that`,
+      `returns the next one — repeat that call when you need more of the file,`,
+      `and never guess at content you have not been shown. Strip the "N| "`,
+      `prefixes before writing any of that content back to a file.`,
       `Each call is executed locally by the bridge and the real result is returned here. Never claim to have read, written, or run anything without the tool result.`,
     ].join("\n");
   }
@@ -441,9 +477,10 @@
   }
 
   // ChatGPT's composer is a ProseMirror contenteditable: an insert builds a
-  // node tree for every line, inside React's input handling. `read_file`
-  // allows 512KB (READ_CAP in bridge.rs), and pushing that in pegged the CPU
-  // and froze the page. 24KB is roughly a large source file.
+  // node tree for every line, inside React's input handling. Pushing a whole
+  // large file in pegged the CPU and froze the page. `read_file` now chunks at
+  // 16KB in the core, so this is the backstop for everything else —
+  // `run_command` output (1MB cap) and big `list_directory` listings.
   const COMPOSER_CAP = 24 * 1024;
 
   /**

@@ -90,8 +90,8 @@ All messages follow this structure:
   "tool": "read_file",
   "arguments": {
     "path": "src/App.tsx",
-    "offset": 0,
-    "limit": 1000
+    "offset": 401,   // 1-based first line; absent → 1
+    "limit": 400     // max lines; absent → 400, always capped at 16KB
   },
   "timestamp": 1724000000000
 }
@@ -162,7 +162,7 @@ also accepts per-tool aliases — a model that emits `Read`, `bash` or
 
 | Tool | Required Args | Optional Args | Max Output | Approval |
 |------|---------------|---------------|------------|----------|
-| `read_file` | `path: string` | — | 512KB | Auto (unless sensitive) |
+| `read_file` | `path: string` | `offset: u32`, `limit: u32` | 16KB per chunk | Auto (unless sensitive) |
 | `write_file` | `path, content` | — | — | Always |
 | `run_command` | `command` | — | 1MB | Always |
 | `list_directory` | `path` | — | 256KB | Auto |
@@ -174,10 +174,37 @@ also accepts per-tool aliases — a model that emits `Read`, `bash` or
 before a project is opened — an AI that has lost the manifest can always
 recover it.
 
+### Chunked reads
+
+`read_file` returns `cat -n` style numbered lines, and **pages** rather than
+truncates. A chunk is at most 400 lines and at most 16KB, whichever comes
+first; a single line longer than 16KB is still returned whole, so a minified
+bundle makes progress instead of looping on the same offset. The file itself
+must be under 16MB (`FILE_TOO_LARGE`, checked from metadata so an oversized
+file is never loaded).
+
+A file that fits in one chunk gets no footer. Anything larger ends with:
+
+```
+[chunk 1 of 3 · lines 1-400 of 1000 · 3.4 KB of 9.5 KB]
+[to continue, call: read_file("src/App.tsx", 401)]
+```
+
+The last chunk says `[end of file]` instead. **The AI decides whether to
+continue** — the extension never auto-pages. Auto-feeding chunks with
+auto-submit would flood the chat, and an auto-submit loop is what froze the
+host page in the first place.
+
+The footer's leading `[` is load-bearing: `parseToolLine` strips list markers
+and backticks but not brackets, so the footer cannot fire itself when the AI
+echoes the result back. `offset` is clamped to the last line rather than
+rejected — the AI is guessing at file length, and a hard error on a stale
+offset would strand it mid-file. Both `offset` and `limit` are accepted as a
+JSON number or as a quoted digit string, because models emit both.
+
 Reserved by the protocol but **not yet implemented** (the core returns
 `UNKNOWN_TOOL`): `search_files`/`grep`, `glob`, `edit_file`, the `git_*` write
-tools, and the `offset`/`limit`, `recursive`/`max_depth`, `cwd`/`timeout_ms`
-optional args above.
+tools, and the `recursive`/`max_depth` and `cwd`/`timeout_ms` optional args.
 
 ---
 
@@ -207,9 +234,11 @@ echoing the manifest executed the entire tool surface at once. Both
 **Result size caps.** A result is truncated to 24KB before it is inserted into
 the chat composer, with a `[truncated at N of M bytes]` marker naming the real
 size, and to 128KB before a widget renders it (`[output truncated]`, the same
-marker the core uses for oversized command output). The core's own caps —
-512KB for `read_file`, 1MB for `run_command` — are unchanged; these are display
-limits, because pushing 512KB into a rich-text composer froze the host page.
+marker the core uses for oversized command output). `read_file` no longer needs
+the composer cap — it chunks at 16KB in the core (§8) — so this is the backstop
+for `run_command` output and large directory listings. These are display
+limits; pushing a whole large file into a rich-text composer froze the host
+page.
 
 **Streaming Safety:**
 - For `<acb_tool>` blocks: Wait for closing `</acb_tool>` tag

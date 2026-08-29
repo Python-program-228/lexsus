@@ -56,7 +56,8 @@ export interface CommitInfo {
 // --- bridge ------------------------------------------------------------------
 
 export interface BridgeTool {
-  ReadFile?: { path: string };
+  /** `offset` is the 1-based first line; omit it for the first chunk. */
+  ReadFile?: { path: string; offset?: number; limit?: number };
   WriteFile?: { path: string; content: string };
   RunCommand?: { command: string };
   ListDirectory?: { path: string };
