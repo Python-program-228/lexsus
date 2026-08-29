@@ -64,6 +64,9 @@
   function insertIntoComposer(text) {
     const el = findComposer();
     if (!el) return false;
+    // Every insert path funnels through here, so one cap covers auto-insert,
+    // both Insert buttons, the handoff prompt and the manifest button.
+    text = S.capForComposer(text);
     el.focus();
     const sel = window.getSelection();
     if (sel && sel.rangeCount > 0) {
@@ -128,7 +131,13 @@
       const nodes = document.querySelectorAll(sel);
       if (nodes.length > 0) source = nodes[nodes.length - 1].textContent;
     }
-    if (source == null) source = document.body ? document.body.innerText.slice(-8000) : "";
+    // No `document.body.innerText` fallback: it forced a whole-document
+    // layout on every scan, and it read the composer — so an auto-inserted
+    // result or a pasted manifest re-triggered itself before being sent.
+    if (source == null) {
+      console.debug("[ACB] no message node matched for", host, "—", sel);
+      return;
+    }
     if (source === lastScanned) return;
     lastScanned = source;
     // Tagged and fenced JSON blocks first; then one-line calls on what's left.
@@ -139,7 +148,16 @@
     }
   };
 
-  const observer = new MutationObserver(() => {
+  // Mutations from our own floating UI would otherwise schedule a scan on
+  // every widget mount and every composer insert.
+  const OWN = "#acb-root, .acb-stage, .acb-status-pill, .acb-handoff-overlay, .acb-toast";
+
+  const observer = new MutationObserver((records) => {
+    const relevant = records.some((r) => {
+      const node = r.target.nodeType === 1 ? r.target : r.target.parentElement;
+      return !node || !node.closest(OWN);
+    });
+    if (!relevant) return;
     clearTimeout(observer._t);
     observer._t = setTimeout(scan, 900);
   });
@@ -298,7 +316,7 @@
           msg.id,
         );
         const output = result.output || "";
-        output.split("\n").forEach((line) => terminal.appendLine(line));
+        terminal.setOutput(output);
         terminal.finish(true, meta.duration_ms ? `${meta.duration_ms}ms` : null);
         terminal.onAction((action) => {
           if (action === "insert") insertIntoComposer(output);
@@ -354,7 +372,7 @@
     if (t.name === "run_command") {
       const terminal = new C.ACBTerminal(t.args.command || "command", msg.id);
       const output = r.ok ? (r.output ?? "") : (r.error ?? "");
-      output.split("\n").forEach((line) => terminal.appendLine(line));
+      terminal.setOutput(output);
       terminal.finish(r.ok, null);
       terminal.onAction((action) => {
         if (action === "insert") insertIntoComposer(output);

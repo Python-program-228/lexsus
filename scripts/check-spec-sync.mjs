@@ -105,7 +105,41 @@ const checks = [
   ["timeoutFor unknown is 15000", S.timeoutFor("nope") === 15000],
   ["extractTools preserves length", S.extractTools(tagged).rest.length === tagged.length],
   ["extractTools finds the call", S.extractTools(tagged).tools[0]?.name === "git_status"],
+
+  // A call must begin its line. Matching mid-sentence meant prose executed:
+  // "you can use run_command: npm test" opened a real approval card.
+  ["prose run_command inert", S.parseToolLine("you can use run_command: npm test to test") === null],
+  ["prose read_file inert", S.parseToolLine('then I will read_file("a.ts") for you') === null],
+  ["bare git_status inert", S.parseToolLine("git_status shows changed files") === null],
+  ["git_status() fires", S.parseToolLine("git_status()")?.name === "git_status"],
+  ["bulleted call fires", S.parseToolLine('- `read_file("a.ts")`')?.name === "read_file"],
+  ["numbered call fires", S.parseToolLine('2. read_file("a.ts")')?.name === "read_file"],
+  ["lenient run_command still fires", S.parseToolLine("run_command: npm test")?.arguments.command === "npm test"],
+
+  // Oversized results must not reach a rich-text composer whole.
+  ["composer cap marks size", S.capForComposer("x".repeat(30000)).includes("truncated at 24576 of 30000")],
+  ["composer cap passes small text through", S.capForComposer("hi") === "hi"],
+  ["composer cap handles null", S.capForComposer(null) === ""],
 ];
+
+// The manifest and the handoff prompt are pasted into the chat, so the AI
+// echoes them back into the scanner. Every line must be inert — when the
+// manifest was generated in call syntax, echoing it ran the whole tool
+// surface at once (two approval cards plus a self-referential list_tools).
+const promptText = S.promptToolSection();
+for (const line of promptText.split("\n")) {
+  const hit = S.parseToolLine(line.trim());
+  if (hit) problems.push(`prompt line executes ${hit.name}: ${JSON.stringify(line)}`);
+}
+// The ```acb example must still teach the JSON form, so write_file is the one
+// expected hit; anything else means a block leaked in.
+const jsonHits = S.extractTools(promptText).tools.map((t) => t.name);
+const unexpected = jsonHits.filter((n) => n !== "write_file");
+if (unexpected.length) problems.push(`prompt JSON fires ${unexpected.join(", ")}`);
+if (!jsonHits.includes("write_file")) {
+  problems.push("prompt no longer teaches a parseable acb block");
+}
+
 for (const [label, ok] of checks) {
   if (!ok) problems.push(`behaviour check failed: ${label}`);
 }

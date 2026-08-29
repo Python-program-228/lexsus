@@ -71,6 +71,11 @@
       approval: "always",
       autoInsert: false,
       timeoutMs: 120000,
+      // The quote is optional on purpose — models very often write the bare
+      // `run_command: npm test`. That leniency is only safe because
+      // `parseToolLine` anchors to the start of the line and `manifest()` is
+      // not rendered in call syntax; without both, prose mentioning the tool
+      // would execute. Do not loosen either without revisiting this.
       lineRe: /run_command\s*[(:]\s*["']?([^"'\n]+)["']?\s*\)?/i,
       lineArgs: ["command"],
       stage: { verb: "Running", arg: "command", fallback: "command" },
@@ -99,7 +104,10 @@
       approval: "auto",
       autoInsert: true,
       timeoutMs: 10000,
-      lineRe: /git_status\b/i,
+      // Parens are required: the bare name appears in the manifest, in the
+      // README's tool list and in ordinary prose, so matching the bare word
+      // let any AI that echoed one of those silently run it.
+      lineRe: /git_status\s*\(\s*\)/i,
       lineArgs: [],
       stage: { verb: "Fetching", noun: "git status" },
     },
@@ -251,12 +259,26 @@
     return { name: spec.name, arguments: args };
   }
 
-  /** Parse a one-line function-call form, e.g. `read_file("src/a.ts")`. */
+  /**
+   * Leading noise a model puts in front of a call: list markers, blockquote
+   * arrows, backticks, `1.` ordinals. Stripped before matching so a bulleted
+   * call still fires.
+   */
+  const LINE_LEAD_RE = /^[\s>*\-+`]*(?:\d+[.)]\s*)?/;
+
+  /**
+   * Parse a one-line function-call form, e.g. `read_file("src/a.ts")`.
+   *
+   * The call must *begin* the line. Matching anywhere in the line meant prose
+   * executed — "you can use run_command: npm test" opened a real approval
+   * card, and any sentence naming a tool could run it.
+   */
   function parseToolLine(line) {
+    const text = String(line).replace(LINE_LEAD_RE, "");
     for (const spec of TOOLS) {
       if (!spec.lineRe) continue;
-      const m = String(line).match(spec.lineRe);
-      if (!m) continue;
+      const m = text.match(spec.lineRe);
+      if (!m || m.index !== 0) continue;
       const args = {};
       spec.lineArgs.forEach((name, i) => {
         if (m[i + 1] != null) args[name] = m[i + 1];
@@ -341,21 +363,33 @@
     return `${stage.verb} ${subject}`;
   }
 
-  /** The call form shown in the prompt, e.g. `read_file("path")`. */
+  /** The call form, for docs. NOT for anything the AI might echo back. */
   function callSyntax(spec) {
     if (spec.args.length === 0) return spec.lineRe ? `${spec.name}()` : spec.name;
     const args = spec.args.map((a) => `"${a.hint || a.name}"`).join(", ");
     return `${spec.name}(${args})`;
   }
 
-  /** Grouped one-line-per-tool manifest. Kept terse on purpose. */
+  /**
+   * Grouped one-line-per-tool manifest. Kept terse on purpose.
+   *
+   * Deliberately rendered as an aligned table, NOT in call syntax. This text
+   * is pasted into the chat, so the AI reliably echoes it back — and when it
+   * did, `parseToolLine` matched every row and executed the entire tool
+   * surface at once, approval cards and all. Six of the seven line regexes
+   * require a quote after `(` or `:`, so omitting parens and quotes here is
+   * what makes the manifest inert. Never format these rows as calls.
+   */
   function manifest() {
     const lines = [];
     for (const group of GROUPS) {
       const rows = TOOLS.filter((t) => t.group === group);
       if (rows.length === 0) continue;
-      lines.push(`${group}:`);
-      for (const spec of rows) lines.push(`  ${callSyntax(spec)} — ${spec.summary}`);
+      lines.push(group);
+      for (const s of rows) {
+        const args = s.args.length ? s.args.map((a) => a.hint || a.name).join(", ") : "—";
+        lines.push(`  ${s.name.padEnd(16)} ${args.padEnd(17)} ${s.summary}`);
+      }
     }
     return lines.join("\n");
   }
@@ -371,10 +405,17 @@
       ``,
       manifest(),
       ``,
-      `Write single-argument calls one per line, exactly as shown above.`,
+      // `tool_name` resolves to no spec, so these two lines teach the syntax
+      // without themselves being runnable calls.
+      `Call a tool by writing its name at the start of its own line, with each`,
+      `argument quoted, in the order the table's argument column lists them:`,
+      ``,
+      `  tool_name("first argument", "second argument")`,
+      `  tool_name()   ← for a tool whose argument column shows —`,
+      ``,
       `For ${jsonOnly.map((t) => t.name).join(", ")} — and ANY argument that spans multiple lines — you MUST instead emit an acb block containing one JSON object:`,
       '```acb',
-      `{"tool":"${example.name}","path":"src/example.ts","content":"<entire new file content>"}`,
+      `{"tool":"${example.name}","path":"path/to/file.ext","content":"<entire new file content>"}`,
       '```',
       ``,
       `${gated.map((t) => t.name).join(" and ")} pause for the user's Allow/Deny — wait for the result rather than assuming it succeeded.`,
@@ -399,11 +440,28 @@
     return spec ? spec.timeoutMs : 15000;
   }
 
+  // ChatGPT's composer is a ProseMirror contenteditable: an insert builds a
+  // node tree for every line, inside React's input handling. `read_file`
+  // allows 512KB (READ_CAP in bridge.rs), and pushing that in pegged the CPU
+  // and froze the page. 24KB is roughly a large source file.
+  const COMPOSER_CAP = 24 * 1024;
+
+  /**
+   * Trim a tool result to something a rich-text composer can absorb. The
+   * marker names the real size so the AI knows it saw only a prefix.
+   */
+  function capForComposer(text) {
+    const s = String(text ?? "");
+    if (s.length <= COMPOSER_CAP) return s;
+    return `${s.slice(0, COMPOSER_CAP)}\n\n[truncated at ${COMPOSER_CAP} of ${s.length} bytes]`;
+  }
+
   globalThis.ACBToolSpec = {
     TOOLS,
     GROUPS,
     TIMEOUTS,
     AUTO_INSERT,
+    COMPOSER_CAP,
     normalizeName,
     specByName,
     normalizeTool,
@@ -417,5 +475,6 @@
     promptToolSection,
     isAutoInsert,
     timeoutFor,
+    capForComposer,
   };
 })();

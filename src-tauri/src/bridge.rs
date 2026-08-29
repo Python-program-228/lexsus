@@ -215,6 +215,12 @@ pub fn spec_by_name(name: &str) -> Option<&'static ToolSpec> {
 /// The compact, grouped tool manifest handed to a web AI. Deliberately
 /// terse: full per-tool docs for every tool would crowd out the actual
 /// project context, so the AI calls `describe_tool` for detail on demand.
+///
+/// Rendered as an aligned table, **never** as `name(args)`. This is the body
+/// of `list_tools`, which auto-inserts into the chat, so the AI echoes it
+/// back — and the extension's line parser matched the call form, executing
+/// the whole tool surface at once. `run_command`'s pattern treats the quote
+/// as optional, so even `run_command(shell command)` fired. Keep it inert.
 pub fn tool_manifest() -> String {
     let mut out = String::new();
     for group in GROUPS {
@@ -223,19 +229,17 @@ pub fn tool_manifest() -> String {
             continue;
         }
         out.push_str(group);
-        out.push_str(":\n");
+        out.push('\n');
         for s in rows {
-            if s.args.is_empty() {
-                out.push_str(&format!("  {} — {}\n", s.name, s.summary));
-            } else {
-                out.push_str(&format!("  {}({}) — {}\n", s.name, s.args, s.summary));
-            }
+            let args = if s.args.is_empty() { "—" } else { s.args };
+            out.push_str(&format!("  {:<16} {:<17} {}\n", s.name, args, s.summary));
         }
     }
     out
 }
 
-/// Full detail for one tool, for `describe_tool`.
+/// Full detail for one tool, for `describe_tool`. Also auto-inserted into the
+/// chat, so it avoids call syntax for the same reason as `tool_manifest`.
 fn describe_spec(s: &ToolSpec) -> String {
     let approval = match s.approval {
         Approval::Auto => "runs immediately",
@@ -243,7 +247,12 @@ fn describe_spec(s: &ToolSpec) -> String {
         Approval::Always => "requires the user's approval",
         Approval::Destructive => "requires the user's approval (may destroy work)",
     };
-    let mut out = format!("{}({})\n  {}\n", s.name, s.args, s.summary);
+    let mut out = format!("{}\n  {}\n", s.name, s.summary);
+    if s.args.is_empty() {
+        out.push_str("  Arguments: none\n");
+    } else {
+        out.push_str(&format!("  Arguments: {}\n", s.args));
+    }
     out.push_str(&format!("  Approval: {approval}\n"));
     out.push_str(&format!("  Timeout: {}ms\n", s.timeout_ms));
     if !s.aliases.is_empty() {
@@ -1092,5 +1101,27 @@ mod tests {
             "manifest is {} bytes — move detail into describe_tool",
             manifest.len()
         );
+    }
+
+    #[test]
+    fn manifest_and_describe_are_not_call_syntax() {
+        // `list_tools` and `describe_tool` auto-insert into the chat, so the AI
+        // echoes their output back and the extension's line parser sees it. In
+        // call syntax every row was a live tool call: echoing the manifest ran
+        // the whole surface, approval cards and all, and froze the page.
+        let mut text = tool_manifest();
+        for s in SPECS {
+            text.push_str(&describe_spec(s));
+        }
+        for s in SPECS {
+            assert!(
+                !text.contains(&format!("{}(", s.name)),
+                "{} is rendered in call syntax — it will execute when echoed",
+                s.name
+            );
+        }
+        // run_command's pattern makes the quote optional, so unquoted parens
+        // anywhere in this text are enough to fire it.
+        assert!(!text.contains("(shell command)"));
     }
 }
