@@ -225,6 +225,7 @@
   const TARGET_LABEL = {
     claudeai: "Continue with Claude.ai",
     gemini: "Continue with Gemini",
+    grok: "Continue with Grok",
     chatgpt: "Continue with ChatGPT",
   };
 

@@ -698,7 +698,7 @@ fn failover_reset(state: State<'_, AppState>, agent: String) -> Result<(), Strin
 }
 
 /// Direction B continuation: deliver the current handoff to a chosen
-/// target (`chatgpt | claudeai | gemini`), or hand back to the local
+/// target (`chatgpt | claudeai | gemini | grok`), or hand back to the local
 /// terminal (`local`).
 #[tauri::command]
 fn failover_deliver(
@@ -706,8 +706,13 @@ fn failover_deliver(
     app: tauri::AppHandle,
     target: String,
 ) -> Result<Handoff, String> {
-    if !matches!(target.as_str(), "chatgpt" | "claudeai" | "gemini" | "local") {
-        return Err("target must be chatgpt, claudeai, gemini or local".into());
+    // Must stay in step with TARGET_HOSTS in extension/background.js — the
+    // extension is what actually opens the tab for the target we name here.
+    if !matches!(
+        target.as_str(),
+        "chatgpt" | "claudeai" | "gemini" | "grok" | "local"
+    ) {
+        return Err("target must be chatgpt, claudeai, gemini, grok or local".into());
     }
     let handoff = build_handoff_impl(&state)?;
     if target == "local" {

@@ -126,7 +126,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
             trigger     TEXT NOT NULL,      -- inactivity | ws_drop | manual
             idle_ms     INTEGER NOT NULL,
             payload     TEXT,
-            target      TEXT,               -- chatgpt | claudeai | gemini | local
+            target      TEXT,               -- chatgpt | claudeai | gemini | grok | local
             delivered   INTEGER NOT NULL DEFAULT 0,
             outcome     TEXT,
             ts          TEXT NOT NULL DEFAULT (datetime('now'))

@@ -168,6 +168,106 @@ if (S.parseToolLine(FOOTER) !== null) {
   problems.push("chunk footer parses as a call — echoing a read would re-fire it");
 }
 
+// ── Supported web-AI hosts ────────────────────────────────────────
+// The host list lives in five places and every omission fails silently:
+// miss background.js and the handoff opens the wrong tab; miss lib.rs and the
+// core rejects the target; miss content-any.js's selector maps and the content
+// script loads but captures nothing.
+const bg = readFileSync(`${ROOT}/extension/background.js`, "utf8");
+const contentAny = readFileSync(`${ROOT}/extension/content-any.js`, "utf8");
+const popup = readFileSync(`${ROOT}/extension/popup.js`, "utf8");
+const libRs = readFileSync(`${ROOT}/src-tauri/src/lib.rs`, "utf8");
+const extManifest = JSON.parse(readFileSync(`${ROOT}/extension/manifest.json`, "utf8"));
+
+/** The `{…}` literal following `start`. Values must not themselves contain braces. */
+const block = (src, start) => {
+  const i = src.indexOf(start);
+  if (i < 0) return "";
+  const a = src.indexOf("{", i);
+  return a < 0 ? "" : src.slice(a, src.indexOf("}", a) + 1);
+};
+const keysOf = (text) => [...text.matchAll(/^\s*(\w+):/gm)].map((m) => m[1]);
+
+// background.js is the source of truth: it is what opens the tab.
+const targetHosts = Object.fromEntries(
+  [...block(bg, "const TARGET_HOSTS").matchAll(/(\w+):\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]),
+);
+const hosts = Object.keys(targetHosts);
+
+// Rust's failover_deliver allowlist, minus the non-browser "local" target.
+// Sliced to stop before `return Err(...)` so the error message's prose is not
+// mistaken for allowlist entries.
+const deliverFn = libRs.slice(
+  libRs.indexOf("fn failover_deliver"),
+  libRs.indexOf("return Err(", libRs.indexOf("fn failover_deliver")),
+);
+const rustTargets = [...deliverFn.matchAll(/"(\w+)"/g)]
+  .map((m) => m[1])
+  .filter((t) => t !== "local");
+if (rustTargets.length === 0) {
+  problems.push("could not parse the failover_deliver target allowlist from lib.rs");
+}
+const missingInRust = hosts.filter((h) => !rustTargets.includes(h));
+const extraInRust = rustTargets.filter((t) => !hosts.includes(t));
+if (missingInRust.length) {
+  problems.push(`lib.rs failover_deliver rejects: ${missingInRust.join(", ")}`);
+}
+if (extraInRust.length) {
+  problems.push(`lib.rs allows targets background.js cannot open: ${extraInRust.join(", ")}`);
+}
+
+// Every host must be declared in the manifest, or no content script runs there.
+const declared = extManifest.content_scripts.flatMap((cs) => cs.matches);
+for (const [name, pattern] of Object.entries(targetHosts)) {
+  if (!declared.includes(pattern)) {
+    problems.push(`manifest.json has no content script for ${name} (${pattern})`);
+  }
+}
+
+// A declared content script only injects on page load, so background.js
+// re-injects into tabs that predate the extension. `chrome.scripting` needs
+// both the permission and host access for the target origin — without them the
+// self-heal silently fails and every stale tab drops its tool results.
+if (!extManifest.permissions.includes("scripting")) {
+  problems.push('manifest.json is missing the "scripting" permission (background.js re-injects)');
+}
+for (const [name, pattern] of Object.entries(targetHosts)) {
+  if (!extManifest.host_permissions.includes(pattern)) {
+    problems.push(`manifest.json host_permissions is missing ${name} (${pattern})`);
+  }
+}
+
+// content-any.js covers everything except chatgpt.com, which has content.js.
+const anyHosts = hosts.filter((h) => h !== "chatgpt");
+for (const map of ["const COMPS", "const SUBMIT", "const MESSAGES"]) {
+  const keys = keysOf(block(contentAny, map));
+  const missing = anyHosts.filter((h) => !keys.includes(h));
+  if (missing.length) {
+    problems.push(`content-any.js ${map.slice(6)} missing: ${missing.join(", ")}`);
+  }
+}
+for (const h of anyHosts) {
+  if (!contentAny.includes(`return "${h}"`)) {
+    problems.push(`content-any.js host detector never returns "${h}"`);
+  }
+}
+
+// The popup resolves the active tab to a target for "Send tool manifest".
+for (const h of hosts) {
+  if (!popup.includes(`"${h}"`)) problems.push(`popup.js cannot resolve a tab to ${h}`);
+}
+
+// A handoff card labels the target by name in both content scripts.
+for (const file of ["content.js", "content-any.js"]) {
+  const src = readFileSync(`${ROOT}/extension/${file}`, "utf8");
+  const labels = keysOf(block(src, "const TARGET_LABEL"));
+  const missing = hosts.filter((h) => !labels.includes(h));
+  if (missing.length) problems.push(`${file} TARGET_LABEL missing: ${missing.join(", ")}`);
+}
+
+console.log(`web-AI hosts:       ${hosts.join(", ")}`);
+console.log("");
+
 if (problems.length) {
   console.log(`FAIL - ${problems.length} problem(s):`);
   for (const p of problems) console.log(`  - ${p}`);

@@ -18,6 +18,7 @@ const TARGET_HOSTS = {
   chatgpt: "https://chatgpt.com/*",
   claudeai: "https://claude.ai/*",
   gemini: "https://gemini.google.com/*",
+  grok: "https://grok.com/*",
 };
 
 // ── Request tracking ──────────────────────────────────────────────
@@ -98,37 +99,88 @@ setInterval(() => {
 }, 30000);
 
 // ── Tab routing ───────────────────────────────────────────────────
+//
+// A declared content script only injects when a page *loads*. So any tab that
+// was already open when the extension was installed, reloaded, or updated has
+// no receiver, and `sendMessage` rejects with "Receiving end does not exist" —
+// during development that is every tab on every reload, and after an
+// auto-update it is every user's open chat. So instead of dropping the message,
+// inject on that failure and retry once.
+
+/** Chrome match pattern → RegExp, for the `scheme://host/*` shapes we declare. */
+function patternToRe(pattern) {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${escaped}$`);
+}
+
+// Read from the manifest at runtime so the file lists cannot drift from
+// `content_scripts` — a stale copy here would inject the wrong bundle.
+const CONTENT_SCRIPTS = chrome.runtime.getManifest().content_scripts.map((cs) => ({
+  matches: cs.matches.map(patternToRe),
+  js: cs.js ?? [],
+  css: cs.css ?? [],
+}));
+
+// tabId → in-flight injection. Concurrent failed sends must not each inject,
+// or the tab ends up with two copies of the UI listening to every message.
+const injecting = new Map();
+
+async function injectInto(tabId, url) {
+  const cs = CONTENT_SCRIPTS.find((c) => c.matches.some((re) => re.test(url)));
+  if (!cs) {
+    console.warn(`[ACB] tab ${tabId} matches no content script: ${url}`);
+    return false;
+  }
+  if (cs.css.length) {
+    await chrome.scripting.insertCSS({ target: { tabId }, files: cs.css });
+  }
+  await chrome.scripting.executeScript({ target: { tabId }, files: cs.js });
+  console.log(`[ACB] injected ${cs.js.join(", ")} into tab ${tabId}`);
+  return true;
+}
+
+/**
+ * Deliver one message to one tab, injecting first if nothing is listening.
+ * Injection is only attempted *after* a send fails, so a tab that already has
+ * a live content script never receives a second copy.
+ */
+async function deliver(tab, msg) {
+  try {
+    await chrome.tabs.sendMessage(tab.id, msg);
+    return true;
+  } catch {
+    // No receiver yet — fall through and inject.
+  }
+  try {
+    let pending = injecting.get(tab.id);
+    if (!pending) {
+      pending = injectInto(tab.id, tab.url).finally(() => injecting.delete(tab.id));
+      injecting.set(tab.id, pending);
+    }
+    if (!(await pending)) return false;
+    await chrome.tabs.sendMessage(tab.id, msg);
+    return true;
+  } catch (err) {
+    console.warn(`[ACB] tab ${tab.id} unreachable: ${err.message}`);
+    return false;
+  }
+}
 
 function forwardToTabs(msg, preferredHost) {
-  const send = (url) => {
-    chrome.tabs.query({ url }, (tabs) => {
-      console.log(`[ACB] forwardToTabs: url="${url}" found ${tabs?.length ?? 0} tabs`);
-      for (const t of tabs) {
-        console.log(`[ACB]   sending to tab ${t.id} url=${t.url}`);
-        chrome.tabs.sendMessage(t.id, msg).catch((err) => {
-          console.warn(`[ACB]   sendMessage failed for tab ${t.id}:`, err.message);
-        });
-      }
-    });
-  };
-  if (preferredHost) {
-    chrome.tabs.query({ url: preferredHost }, (tabs) => {
-      console.log(`[ACB] forwardToTabs: preferredHost="${preferredHost}" found ${tabs?.length ?? 0} tabs`);
-      if (tabs && tabs.length > 0) {
-        for (const t of tabs) {
-          console.log(`[ACB]   sending to tab ${t.id} url=${t.url}`);
-          chrome.tabs.sendMessage(t.id, msg).catch((err) => {
-            console.warn(`[ACB]   sendMessage failed for tab ${t.id}:`, err.message);
-          });
-        }
-      } else {
-        console.log("[ACB] no preferred tabs found, broadcasting to all targets");
-        for (const url of Object.values(TARGET_HOSTS)) send(url);
-      }
-    });
-  } else {
-    for (const url of Object.values(TARGET_HOSTS)) send(url);
-  }
+  const urls = preferredHost ? [preferredHost] : Object.values(TARGET_HOSTS);
+  chrome.tabs.query({ url: urls }, (tabs) => {
+    if (tabs?.length) {
+      for (const t of tabs) void deliver(t, msg);
+      return;
+    }
+    if (!preferredHost) {
+      console.log("[ACB] no web-AI tab is open — nothing to deliver to");
+      return;
+    }
+    // The requested target isn't open; any paired chat beats dropping the call.
+    console.log(`[ACB] no tab for ${preferredHost} — broadcasting to all targets`);
+    forwardToTabs(msg, null);
+  });
 }
 
 function hostForTarget(target) {
