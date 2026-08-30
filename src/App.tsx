@@ -19,6 +19,7 @@ import ProjectDialog from "./components/ProjectDialog";
 import TraceView from "./views/TraceView";
 import Statusbar from "./components/Statusbar";
 import TerminalPane from "./components/TerminalPane";
+import Titlebar from "./components/Titlebar";
 import WorkbenchRail, { type View } from "./components/WorkbenchRail";
 import { useApprovals } from "./hooks/useApprovals";
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
@@ -142,15 +143,18 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
-      <WorkbenchRail
-        view={view}
-        onViewChange={setView}
-        paired={paired}
-        onOpenProject={() => setProjectOpen(true)}
-      />
+    <div className="flex h-screen w-full flex-col overflow-hidden bg-background text-foreground">
+      <Titlebar />
 
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <WorkbenchRail
+          view={view}
+          onViewChange={setView}
+          paired={paired}
+          onOpenProject={() => setProjectOpen(true)}
+        />
+
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <ApprovalBanner approvals={approvals} onDecide={decide} />
         <FailoverBanner />
 
@@ -224,6 +228,7 @@ export default function App() {
         onPick={onPickProject}
         onBrowse={() => void onBrowse()}
       />
+      </div>
     </div>
   );
 }
