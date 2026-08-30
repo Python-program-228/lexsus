@@ -5,7 +5,6 @@ import {
   ActivityIcon,
   BookOpenIcon,
   CheckIcon,
-  CircleAlertIcon,
   CircleIcon,
   FileIcon,
   FlaskConicalIcon,
@@ -13,24 +12,9 @@ import {
   SquarePenIcon,
 } from "lucide-react";
 import type { FsEvent, TraceStep } from "../lib/types";
-import { Badge } from "./ui/badge";
-import { Button } from "./ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "./ui/card";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "./ui/empty";
-import { ScrollArea } from "./ui/scroll-area";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { ViewShell } from "./ViewShell";
 
 interface TraceItem extends TraceStep {
   confirmed: boolean;
@@ -42,14 +26,14 @@ const ICONS: Record<string, ReactNode> = {
   editing: <SquarePenIcon />,
   running: <PlayIcon />,
   test: <FlaskConicalIcon />,
-  error: <CircleAlertIcon className="text-destructive" />,
+  error: <CircleIcon className="text-danger" />,
   fs: <FileIcon />,
 };
 
-/** Live activity trace: web-AI tool steps + watcher grounding. Headroom:
- *  newest 3 expanded, older collapse into a summary line you can click to
+/** Live activity trace view: web-AI tool steps + watcher grounding.
+ *  Newest 3 expanded, older collapse into a summary line you can click to
  *  expand. */
-export default function ActivityTrace() {
+export default function TraceView() {
   const [items, setItems] = useState<TraceItem[]>([]);
   const [collapsed, setCollapsed] = useState(true);
   const idRef = useRef(0);
@@ -127,11 +111,11 @@ export default function ActivityTrace() {
         <span className="min-w-0 flex-1 truncate text-xs">{label}</span>
         {it.kind === "editing" &&
           (it.confirmed ? (
-            <Badge className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
+            <Badge className="border-success/30 bg-success/10 text-success">
               <CheckIcon /> saved
             </Badge>
           ) : (
-            <Badge variant="outline" className="text-amber-400">
+            <Badge variant="outline" className="text-warning">
               waiting
             </Badge>
           ))}
@@ -153,64 +137,51 @@ export default function ActivityTrace() {
   }
 
   return (
-    <Card className="h-full">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <ActivityIcon className="size-4 shrink-0 text-muted-foreground" />
-          Live activity trace
-        </CardTitle>
-        <CardDescription>
-          grounded against the filesystem watcher · {visible.length} events
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="min-h-0 flex-1">
-        <ScrollArea className="h-[340px] pr-3">
-          {visible.length === 0 ? (
-            <Empty className="h-[320px]">
-              <EmptyMedia variant="icon">
-                <ActivityIcon />
-              </EmptyMedia>
-              <EmptyContent>
-                <EmptyHeader>
-                  <EmptyTitle>No activity yet</EmptyTitle>
-                  <EmptyDescription>
-                    Let a web AI work on the project — its read, write and
-                    run steps appear here as they execute.
-                  </EmptyDescription>
-                </EmptyHeader>
-              </EmptyContent>
-            </Empty>
-          ) : (
-            <ul className="flex flex-col gap-0.5">
-              {collapsed && earlier.length > 0 && (
-                <li>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setCollapsed(false)}
-                    className="text-muted-foreground"
-                  >
-                    {earlier.length} earlier steps · {filesTouched} files touched
-                  </Button>
-                </li>
-              )}
-              {expanded.map(renderItem)}
-              {!collapsed && (
-                <li>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setCollapsed(true)}
-                    className="text-muted-foreground"
-                  >
-                    collapse older steps
-                  </Button>
-                </li>
-              )}
-            </ul>
+    <ViewShell
+      icon={ActivityIcon}
+      title="Live activity trace"
+      description={`grounded against the filesystem watcher · ${visible.length} events`}
+    >
+      {visible.length === 0 ? (
+        <div className="flex flex-1 items-center justify-center p-8 text-center">
+          <div className="flex flex-col items-center gap-2">
+            <ActivityIcon className="size-8 text-muted-foreground/50" />
+            <p className="text-sm font-medium">No activity yet</p>
+            <p className="max-w-56 text-xs leading-relaxed text-muted-foreground">
+              Let a web AI work on the project — its read, write and run steps
+              appear here as they execute.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <ul className="flex flex-col gap-0.5">
+          {collapsed && earlier.length > 0 && (
+            <li>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setCollapsed(false)}
+                className="text-muted-foreground"
+              >
+                {earlier.length} earlier steps · {filesTouched} files touched
+              </Button>
+            </li>
           )}
-        </ScrollArea>
-      </CardContent>
-    </Card>
+          {expanded.map(renderItem)}
+          {!collapsed && (
+            <li>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setCollapsed(true)}
+                className="text-muted-foreground"
+              >
+                collapse older steps
+              </Button>
+            </li>
+          )}
+        </ul>
+      )}
+    </ViewShell>
   );
 }

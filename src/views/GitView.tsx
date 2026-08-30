@@ -21,27 +21,11 @@ import {
 } from "../lib/bridge";
 import type { BranchInfo, CommitInfo, FileDiff } from "../lib/types";
 import { cn } from "../lib/utils";
-import { Badge } from "./ui/badge";
-import { Button } from "./ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "./ui/card";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "./ui/empty";
-import { Input } from "./ui/input";
-import { ScrollArea } from "./ui/scroll-area";
-import { Separator } from "./ui/separator";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { ScrollArea } from "../components/ui/scroll-area";
+import { Separator } from "../components/ui/separator";
 import {
   Table,
   TableBody,
@@ -49,9 +33,10 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "./ui/table";
-import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
-import { toast } from "./ui/toast";
+} from "../components/ui/table";
+import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { toast } from "../components/ui/toast";
+import { ViewShell } from "./ViewShell";
 
 type Tab = "status" | "branch" | "history";
 
@@ -65,9 +50,9 @@ const STATUS_COLOR: Record<string, ChipColor> = {
   conflicted: "danger",
 };
 
-/** Full git workflow from the app (M1.7): status + stage/unstage + diff,
- *  branch switching, history, and commit — all via git2. */
-export default function GitPanel() {
+/** Git view: status + stage/unstage + diff, branch switching, history,
+ *  and commit — all via git2 in the Rust core. */
+export default function GitView() {
   const [tab, setTab] = useState<Tab>("status");
   const [diffs, setDiffs] = useState<FileDiff[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -135,37 +120,34 @@ export default function GitPanel() {
   const selectedDiff = diffs.find((d) => d.path === selected);
 
   return (
-    <Card className="h-full">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <GitBranchIcon className="size-4 shrink-0 text-muted-foreground" />
-          Git
-        </CardTitle>
-        <CardDescription>
-          {error ? (
-            <span className="text-destructive">{error}</span>
-          ) : (
-            "status · branch · history"
-          )}
-        </CardDescription>
-        <CardAction>
-          <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
-            <TabsList>
-              <TabsTrigger value="status" className="gap-1">
-                <ListTodoIcon /> Status
-              </TabsTrigger>
-              <TabsTrigger value="branch" className="gap-1">
-                <GitBranchIcon /> Branch
-              </TabsTrigger>
-              <TabsTrigger value="history" className="gap-1">
-                <HistoryIcon /> History
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-        </CardAction>
-      </CardHeader>
+    <ViewShell
+      icon={GitBranchIcon}
+      title="Git"
+      description={error ? undefined : "status · branch · history"}
+      padded={false}
+      actions={
+        <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+          <TabsList>
+            <TabsTrigger value="status" className="gap-1">
+              <ListTodoIcon /> Status
+            </TabsTrigger>
+            <TabsTrigger value="branch" className="gap-1">
+              <GitBranchIcon /> Branch
+            </TabsTrigger>
+            <TabsTrigger value="history" className="gap-1">
+              <HistoryIcon /> History
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+      }
+    >
+      {error && (
+        <p className="shrink-0 border-b border-border bg-danger/10 px-4 py-2 text-xs text-danger">
+          {error}
+        </p>
+      )}
 
-      <CardContent className="flex flex-col gap-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
         {tab === "status" && (
           <>
             <div className="flex flex-wrap items-center gap-2">
@@ -193,19 +175,15 @@ export default function GitPanel() {
             </div>
 
             {diffs.length === 0 ? (
-              <Empty className="py-8">
-                <EmptyMedia variant="icon">
-                  <CheckIcon />
-                </EmptyMedia>
-                <EmptyContent>
-                  <EmptyHeader>
-                    <EmptyTitle>Working tree clean</EmptyTitle>
-                    <EmptyDescription>
-                      No changes to show — edit a file to see it here.
-                    </EmptyDescription>
-                  </EmptyHeader>
-                </EmptyContent>
-              </Empty>
+              <div className="flex flex-1 items-center justify-center p-8 text-center">
+                <div className="flex flex-col items-center gap-2">
+                  <CheckIcon className="size-8 text-muted-foreground/50" />
+                  <p className="text-sm font-medium">Working tree clean</p>
+                  <p className="text-xs text-muted-foreground">
+                    No changes to show — edit a file to see it here.
+                  </p>
+                </div>
+              </div>
             ) : (
               <Table>
                 <TableHeader>
@@ -239,8 +217,8 @@ export default function GitPanel() {
                         </Chip>
                       </TableCell>
                       <TableCell className="text-right font-mono text-xs whitespace-nowrap">
-                        <span className="text-emerald-400">+{d.added}</span>{" "}
-                        <span className="text-red-400">-{d.deleted}</span>
+                        <span className="text-success">+{d.added}</span>{" "}
+                        <span className="text-danger">-{d.deleted}</span>
                       </TableCell>
                       <TableCell className="text-right">
                         <Button
@@ -271,7 +249,7 @@ export default function GitPanel() {
             )}
 
             {selectedDiff && (
-              <ScrollArea className="h-36 rounded-lg border border-border/60 bg-muted/20 p-3">
+              <ScrollArea className="h-36 shrink-0 rounded-lg border border-border/60 bg-surface-2/50 p-3">
                 <pre className="font-mono text-[11px] leading-relaxed text-muted-foreground">
                   {selectedDiff.patch}
                 </pre>
@@ -296,19 +274,15 @@ export default function GitPanel() {
 
         {tab === "branch" &&
           (branches.length === 0 ? (
-            <Empty className="py-8">
-              <EmptyMedia variant="icon">
-                <GitBranchIcon />
-              </EmptyMedia>
-              <EmptyContent>
-                <EmptyHeader>
-                  <EmptyTitle>No branches</EmptyTitle>
-                  <EmptyDescription>
-                    Open a project folder to inspect its branches.
-                  </EmptyDescription>
-                </EmptyHeader>
-              </EmptyContent>
-            </Empty>
+            <div className="flex flex-1 items-center justify-center p-8 text-center">
+              <div className="flex flex-col items-center gap-2">
+                <GitBranchIcon className="size-8 text-muted-foreground/50" />
+                <p className="text-sm font-medium">No branches</p>
+                <p className="text-xs text-muted-foreground">
+                  Open a project folder to inspect its branches.
+                </p>
+              </div>
+            </div>
           ) : (
             <ul className="flex flex-col gap-1">
               {branches.map((b) => (
@@ -339,23 +313,19 @@ export default function GitPanel() {
           ))}
 
         {tab === "history" && (
-          <div className="flex flex-col gap-3">
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
             {history.length === 0 ? (
-              <Empty className="py-8">
-                <EmptyMedia variant="icon">
-                  <HistoryIcon />
-                </EmptyMedia>
-                <EmptyContent>
-                  <EmptyHeader>
-                    <EmptyTitle>No history</EmptyTitle>
-                    <EmptyDescription>
-                      Commits made in this repository will appear here.
-                    </EmptyDescription>
-                  </EmptyHeader>
-                </EmptyContent>
-              </Empty>
+              <div className="flex flex-1 items-center justify-center p-8 text-center">
+                <div className="flex flex-col items-center gap-2">
+                  <HistoryIcon className="size-8 text-muted-foreground/50" />
+                  <p className="text-sm font-medium">No history</p>
+                  <p className="text-xs text-muted-foreground">
+                    Commits made in this repository will appear here.
+                  </p>
+                </div>
+              </div>
             ) : (
-              <ScrollArea className="h-56 pr-3">
+              <ScrollArea className="min-h-0 flex-1 pr-3">
                 <ul className="flex flex-col gap-0.5">
                   {history.map((c) => (
                     <li key={c.oid}>
@@ -368,7 +338,9 @@ export default function GitPanel() {
                         onClick={() => void showCommit(c.oid)}
                       >
                         <span className="flex flex-col items-start gap-0.5">
-                          <span className="text-xs font-medium">{c.message}</span>
+                          <span className="text-xs font-medium">
+                            {c.message}
+                          </span>
                           <span className="text-[11px] text-muted-foreground">
                             {c.oid.slice(0, 7)} · {c.author} ·{" "}
                             {new Date(c.timestamp * 1000).toLocaleString()}
@@ -381,7 +353,7 @@ export default function GitPanel() {
               </ScrollArea>
             )}
             {commitDiff && (
-              <ScrollArea className="h-40 rounded-lg border border-border/60 bg-muted/20 p-3">
+              <ScrollArea className="h-40 shrink-0 rounded-lg border border-border/60 bg-surface-2/50 p-3">
                 <pre className="font-mono text-[11px] leading-relaxed text-muted-foreground">
                   {commitDiff}
                 </pre>
@@ -389,7 +361,7 @@ export default function GitPanel() {
             )}
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </ViewShell>
   );
 }

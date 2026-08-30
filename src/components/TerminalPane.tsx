@@ -6,17 +6,18 @@ import "@xterm/xterm/css/xterm.css";
 import { SquareTerminalIcon } from "lucide-react";
 import type { TerminalRunEvent } from "../lib/types";
 import { cn } from "../lib/utils";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 
+/** Matches --surface-2 / --foreground tokens; xterm needs concrete values. */
 const TERMINAL_THEME = {
-  background: "#0d0d0d",
-  foreground: "#e6e6e6",
+  background: "#16171c",
+  foreground: "#eceef2",
 };
 
 /**
  * Read-only command terminal: streams every `run_command` the web AI
  * executes (command header, live output, exit status) into an xterm.js
- * pane. The user watches; approval cards are the control point.
+ * pane that fills the workbench's left column. The user watches;
+ * approval cards (the global banner) are the control point.
  */
 export default function TerminalPane() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -27,7 +28,8 @@ export default function TerminalPane() {
     if (!container) return;
 
     const term = new Terminal({
-      fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
+      fontFamily:
+        '"Geist Mono Variable", ui-monospace, "Cascadia Mono", Consolas, monospace',
       fontSize: 13,
       scrollback: 5000,
       cursorBlink: false,
@@ -49,7 +51,7 @@ export default function TerminalPane() {
       if (disposed) return;
       const event = e.payload;
       if (event.kind === "start") {
-        term.write(`\r\n\x1b[32m$ ${event.command}\x1b[0m\r\n`);
+        term.write(`\r\n\x1b[36m$ ${event.command}\x1b[0m\r\n`);
         setRunning(true);
       } else if (event.kind === "output") {
         term.write(event.data);
@@ -79,34 +81,25 @@ export default function TerminalPane() {
   }, []);
 
   return (
-    <Card className="h-full">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <SquareTerminalIcon className="size-4 shrink-0 text-muted-foreground" />
-          Terminal
-          <span className="flex items-center gap-1.5">
-            <span
-              className={cn(
-                "size-2 rounded-full",
-                running
-                  ? "animate-pulse bg-emerald-500"
-                  : "bg-zinc-700",
-              )}
-            />
-            <span className="text-xs font-normal text-muted-foreground">
-              {running ? "web AI running a command" : "idle"}
-            </span>
-          </span>
-        </CardTitle>
-        <CardDescription>
-          live output of the commands the web AI runs in this project
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex min-h-0 flex-1 flex-col px-3 pb-3">
-        <div className="h-[340px] overflow-hidden rounded-lg border border-border/60 bg-[#0d0d0d] lg:h-full">
-          <div ref={containerRef} className="h-full w-full p-2" />
+    <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-surface">
+      <header className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
+        <SquareTerminalIcon className="size-4 shrink-0 text-muted-foreground" />
+        <h2 className="text-sm font-semibold">Terminal</h2>
+        <span className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span
+            className={cn(
+              "size-1.5 rounded-full",
+              running ? "animate-pulse bg-success" : "bg-muted-foreground/40",
+            )}
+          />
+          {running ? "web AI running a command" : "idle"}
+        </span>
+      </header>
+      <div className="min-h-0 flex-1 p-2">
+        <div className="h-full w-full overflow-hidden rounded-md border border-border/60 bg-[#16171c]">
+          <div ref={containerRef} className="h-full w-full p-1.5" />
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
