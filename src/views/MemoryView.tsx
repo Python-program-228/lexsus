@@ -19,16 +19,10 @@ import type {
   SessionEvent,
   SessionSummary,
 } from "../lib/types";
-import { Badge } from "./ui/badge";
-import { Button } from "./ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "./ui/card";
-import { toast } from "./ui/toast";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { toast } from "../components/ui/toast";
+import { ViewShell } from "./ViewShell";
 
 function FactList({
   title,
@@ -42,10 +36,10 @@ function FactList({
   if (items.length === 0) return null;
   const color =
     tone === "failure"
-      ? "text-rose-400"
+      ? "text-danger"
       : tone === "constraint"
-        ? "text-amber-400"
-        : "text-sky-400";
+        ? "text-warning"
+        : "text-info";
   return (
     <div className="flex flex-col gap-1">
       <p className={`text-[11px] font-medium ${color}`}>{title}</p>
@@ -68,7 +62,7 @@ function FactList({
  * into the local archive and extracts facts — objective, decisions,
  * failed attempts, constraints — that enrich every handoff.
  */
-export default function MemoryPanel() {
+export default function MemoryView() {
   const [facts, setFacts] = useState<ProjectFacts | null>(null);
   const [report, setReport] = useState<ArchiveReport | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -124,20 +118,14 @@ export default function MemoryPanel() {
   }
 
   return (
-    <Card className="h-full">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <BrainIcon className="size-4 shrink-0 text-muted-foreground" />
-          Project memory
-        </CardTitle>
-        <CardDescription>
-          archived Claude Code sessions → facts, not chat
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center gap-2">
+    <ViewShell
+      icon={BrainIcon}
+      title="Project memory"
+      description="archived Claude Code sessions → facts, not chat"
+      actions={
+        <>
           <Button size="sm" disabled={busy} onClick={() => void scan()}>
-            <SparklesIcon /> Scan & extract
+            <SparklesIcon /> Scan &amp; extract
           </Button>
           <Button
             variant="ghost"
@@ -151,18 +139,21 @@ export default function MemoryPanel() {
           >
             <RefreshCwIcon /> Refresh
           </Button>
-          {report && (
-            <span className="ml-auto text-[11px] text-muted-foreground">
-              {report.refreshed} new · {report.skipped} unchanged
-            </span>
-          )}
-        </div>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3">
+        {report && (
+          <p className="text-right text-[11px] text-muted-foreground">
+            {report.refreshed} new · {report.skipped} unchanged
+          </p>
+        )}
 
         {facts ? (
-          <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5">
+          <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-surface-2/50 px-3 py-2.5">
             {facts.objective && (
               <div className="flex items-start gap-2">
-                <CompassIcon className="mt-0.5 size-3.5 shrink-0 text-emerald-400" />
+                <CompassIcon className="mt-0.5 size-3.5 shrink-0 text-success" />
                 <p className="text-xs leading-relaxed">{facts.objective}</p>
               </div>
             )}
@@ -225,7 +216,9 @@ export default function MemoryPanel() {
 
         {sessions.length > 0 && (
           <div className="flex flex-col gap-1">
-            <p className="app-eyebrow text-muted-foreground">Archived sessions</p>
+            <p className="app-eyebrow text-muted-foreground">
+              Archived sessions
+            </p>
             {sessions.map((s) => (
               <div key={s.id}>
                 <button
@@ -247,7 +240,7 @@ export default function MemoryPanel() {
                   </span>
                 </button>
                 {openId === s.id && openEvents && (
-                  <div className="ml-6 mt-1 max-h-44 overflow-y-auto rounded-md border border-border/60 bg-muted/20 p-2">
+                  <div className="ml-6 mt-1 max-h-44 overflow-y-auto rounded-md border border-border/60 bg-surface-2/50 p-2">
                     {openEvents.map((e, i) => (
                       <p
                         key={`${e.ts_ms}-${i}`}
@@ -259,7 +252,7 @@ export default function MemoryPanel() {
                         </span>{" "}
                         <span
                           className={
-                            e.kind === "error" ? "text-rose-400" : "opacity-90"
+                            e.kind === "error" ? "text-danger" : "opacity-90"
                           }
                         >
                           [{e.kind}]
@@ -278,7 +271,7 @@ export default function MemoryPanel() {
             ))}
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </ViewShell>
   );
 }

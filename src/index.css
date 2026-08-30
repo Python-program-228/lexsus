@@ -3,6 +3,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -14,12 +15,10 @@ body,
 
 body {
   margin: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    sans-serif;
   font-size: 100%;
   line-height: 1.5;
   font-optical-sizing: auto;
-  background: #09090b;
+  background: var(--background);
 }
 
 /* Apple-style type: display text gets negative tracking + tight leading */
@@ -41,17 +40,16 @@ body {
 
 /* Translucent chrome — content blurs and tints underneath */
 .glass {
-  background: rgba(17, 17, 20, 0.55);
+  background: color-mix(in oklab, var(--surface) 78%, transparent);
   backdrop-filter: blur(20px) saturate(160%);
   -webkit-backdrop-filter: blur(20px) saturate(160%);
 }
 
-/* Heavier material for structural regions (sidebar) */
+/* Heavier material for structural regions (rail, statusbar) */
 .glass-sidebar {
-  background: rgba(14, 14, 17, 0.72);
+  background: color-mix(in oklab, var(--surface) 88%, transparent);
   backdrop-filter: blur(24px) saturate(140%);
   -webkit-backdrop-filter: blur(24px) saturate(140%);
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 /* Feedback on pointer-down, not release */
@@ -66,11 +64,6 @@ body {
   transform: scale(0.97);
 }
 
-/* Scroll-edge fade where glass chrome meets content */
-.edge-fade {
-  background: linear-gradient(to bottom, rgba(9, 9, 11, 0.75), transparent);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .pressable {
     transition-duration: 0.01ms;
@@ -80,7 +73,7 @@ body {
 @media (prefers-reduced-transparency: reduce) {
   .glass,
   .glass-sidebar {
-    background: #111114;
+    background: var(--surface);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
@@ -88,7 +81,9 @@ body {
 
 @theme inline {
   --font-heading: var(--font-sans);
-  --font-sans: 'Geist Variable', sans-serif;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "Cascadia Mono", Consolas,
+    monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -106,6 +101,7 @@ body {
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -120,6 +116,17 @@ body {
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  /* workbench surfaces + semantic status */
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -129,73 +136,70 @@ body {
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/*
+ * Refined dark-only theme. Values live in :root — the app never renders
+ * light — while main.tsx still adds `.dark` so HeroUI's dark styles apply.
+ */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  /* surfaces — 3-level hierarchy, matched to the terminal */
+  --background: oklch(0.145 0.004 260);
+  --surface: oklch(0.175 0.005 260);
+  --surface-2: oklch(0.215 0.006 260);
+
+  --foreground: oklch(0.955 0 0);
+  --muted-foreground: oklch(0.66 0 0);
+
+  --card: var(--surface);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.215 0.006 260);
+  --popover-foreground: var(--foreground);
+
+  /* one accent — teal, kin to the terminal green */
+  --primary: oklch(0.77 0.12 180);
+  --primary-foreground: oklch(0.18 0.03 190);
+
+  --secondary: oklch(0.215 0.006 260);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.215 0.006 260);
+  --accent: oklch(0.245 0.007 260);
+  --accent-foreground: var(--foreground);
+
+  /* semantic status */
+  --success: oklch(0.76 0.14 165);
+  --success-foreground: oklch(0.18 0.03 165);
+  --warning: oklch(0.8 0.13 85);
+  --warning-foreground: oklch(0.2 0.03 85);
+  --danger: oklch(0.7 0.18 25);
+  --danger-foreground: oklch(0.98 0.01 25);
+  --info: oklch(0.76 0.1 235);
+  --info-foreground: oklch(0.18 0.03 235);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--danger-foreground);
+
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.77 0.12 180 / 50%);
+
+  --chart-1: var(--primary);
+  --chart-2: var(--info);
+  --chart-3: var(--warning);
+  --chart-4: var(--success);
+  --chart-5: var(--danger);
+
+  --radius: 0.5rem;
+
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
 }
 
 .dark {
-  --background: #09090b;
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* dark-only app: tokens already live in :root; kept for HeroUI selectors */
 }
 
 @layer base {
@@ -207,5 +211,10 @@ body {
   }
   html {
     @apply font-sans;
+  }
+  /* Tailwind v4 preflight makes buttons cursor:default — restore pointer */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
   }
 }

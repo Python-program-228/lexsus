@@ -127,7 +127,7 @@ export function failoverReset(agent: "local" | "web"): Promise<void> {
 }
 
 export function failoverDeliver(
-  target: "chatgpt" | "claudeai" | "gemini" | "local",
+  target: "chatgpt" | "claudeai" | "gemini" | "grok" | "local",
 ): Promise<Handoff> {
   return invoke("failover_deliver", { target });
 }
