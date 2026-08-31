@@ -120,9 +120,9 @@
     }
   };
 
-  // Mutations from our own floating UI would otherwise schedule a scan on
-  // every widget mount and every composer insert.
-  const OWN = "#acb-root, .acb-stage, .acb-status-pill, .acb-handoff-overlay, .acb-toast";
+  // Mutations from our own dock would otherwise schedule a scan on every
+  // entry mount and every composer insert.
+  const OWN = "#acb-dock, .acb-handoff-overlay, .acb-toast";
 
   const observer = new MutationObserver((records) => {
     const relevant = records.some((r) => {
@@ -135,18 +135,16 @@
   });
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // ── Root + status ───────────────────────────────────────────────
-  let root = null;
-  let statusPill = null;
+  // ── Dock (panel + timeline) ─────────────────────────────────────
+  let dock = null;
 
-  function ensureRoot() {
-    if (!root) {
-      root = document.createElement("div");
-      root.id = "acb-root";
-      root.className = "acb-root";
-      document.body.appendChild(root);
+  function ensureDock() {
+    if ((!dock || !dock.el.isConnected) && C) {
+      dock = new C.ACBDock();
+      dock.mount(document.body);
+      dock.setStatus("connecting");
     }
-    return root;
+    return dock;
   }
 
   // ── Global close handler (event delegation — always works) ──────
@@ -159,67 +157,15 @@
     if (widget) {
       widget.setAttribute("data-state", "dismissed");
       setTimeout(() => widget.remove(), 200);
-    } else {
-      closeBtn.closest(".acb-status-pill")?.remove();
     }
   }, true);
 
-  function ensureStatusPill() {
-    if (!statusPill && C) {
-      statusPill = new C.ACBStatusPill();
-      statusPill.mount(document.body);
-      statusPill.setState("connecting");
-    }
-    return statusPill;
-  }
-
-  // ── Stage indicator (live tool progress) ────────────────────────
-  let stage = null;
-  function ensureStage() {
-    if ((!stage || !stage.el.isConnected) && C) {
-      stage = new C.ACBStageIndicator();
-      stage.mount(document.body);
-    }
-    return stage;
-  }
-  const showWorkingStage = (tool) => ensureStage()?.setStage(S.stageLabel(tool), "working");
-  const markStageDone = () => ensureStage()?.setStage("Finished ✓", "done");
-  const markStageInserted = () => ensureStage()?.setStage("Inserted ✓", "done");
-  const markStageFailed = () => ensureStage()?.setStage("Failed ✗", "error");
-  const markStageAwait = () => ensureStage()?.setStage("Awaiting approval…", "working");
-
-  // ── Stacked widget management (iOS-style) ───────────────────────
-  const MAX_VISIBLE = 3;
-
-  function limitVisibleWidgets() {
-    const r = ensureRoot();
-    const widgets = r.querySelectorAll(".acb-widget");
-    widgets.forEach((w, i) => {
-      if (i < widgets.length - MAX_VISIBLE) {
-        w.setAttribute("data-visible", "false");
-      } else {
-        w.removeAttribute("data-visible");
-      }
-    });
-    // Remove old "more" badge if any
-    const oldBadge = r.querySelector(".acb-stack-more");
-    if (oldBadge) oldBadge.remove();
-    // Add "N more" badge if hidden widgets exist
-    const hidden = r.querySelectorAll('[data-visible="false"]');
-    if (hidden.length > 0) {
-      const badge = document.createElement("div");
-      badge.className = "acb-stack-more";
-      badge.textContent = `+${hidden.length} more`;
-      badge.addEventListener("click", () => {
-        hidden.forEach((w) => {
-          w.setAttribute("data-visible", "true");
-          w.setAttribute("data-expanded", "false");
-        });
-        badge.remove();
-      });
-      r.appendChild(badge);
-    }
-  }
+  // ── Stage (dock footer line) ────────────────────────────────────
+  const showWorkingStage = (tool) => ensureDock()?.setStage(S.stageLabel(tool), "working");
+  const markStageDone = () => ensureDock()?.setStage("Finished ✓", "done");
+  const markStageInserted = () => ensureDock()?.setStage("Inserted ✓", "done");
+  const markStageFailed = () => ensureDock()?.setStage("Failed ✗", "error");
+  const markStageAwait = () => ensureDock()?.setStage("Awaiting approval…", "working");
 
   // ── Widget rendering ────────────────────────────────────────────
   const TARGET_LABEL = {
@@ -247,7 +193,8 @@
   }
 
   function showToolWidget(msg) {
-    const root = ensureRoot();
+    const root = ensureDock()?.timeline;
+    if (!root) return;
 
     // Handle v2 tool_result format
     if (msg.type === "tool_result") {
@@ -269,7 +216,6 @@
           });
         });
         card.mount(root);
-        limitVisibleWidgets();
         return;
       }
 
@@ -281,7 +227,6 @@
           { detail: meta.path || meta.command || meta.detail || "", errorCode: error.code || "" },
         );
         resultBlock.mount(root);
-        limitVisibleWidgets();
         return;
       }
 
@@ -298,7 +243,6 @@
           if (action === "insert") insertIntoComposer(output);
         });
         terminal.mount(root);
-        limitVisibleWidgets();
         markStageDone();
         return;
       }
@@ -321,7 +265,6 @@
         }
       });
       resultBlock.mount(root);
-      limitVisibleWidgets();
       markStageDone();
       return;
     }
@@ -341,7 +284,6 @@
         });
       });
       card.mount(root);
-      limitVisibleWidgets();
       return;
     }
 
@@ -354,7 +296,6 @@
         if (action === "insert") insertIntoComposer(output);
       });
       terminal.mount(root);
-      limitVisibleWidgets();
       r.ok ? markStageDone() : markStageFailed();
       return;
     }
@@ -377,7 +318,6 @@
       }
     });
     result.mount(root);
-    limitVisibleWidgets();
     r.ok ? markStageDone() : markStageFailed();
   }
 
@@ -409,10 +349,7 @@
     }
     // Status updates from background
     if (msg.type === "status") {
-      ensureStatusPill();
-      if (statusPill) {
-        statusPill.setState(msg.connected ? "connected" : "disconnected");
-      }
+      ensureDock()?.setStatus(msg.connected ? "connected" : "disconnected");
     }
   });
 })();

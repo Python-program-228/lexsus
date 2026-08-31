@@ -1,11 +1,9 @@
-/* AI Continuity Bridge — UI Component Library v2.1
+/* AI Continuity Bridge — UI Component Library v4
    Reusable, lightweight DOM components for the extension.
-   iOS-style stacked notifications with close + expand/collapse. */
+   Edge-docked panel with an activity timeline: one entry per tool call. */
 
 (function () {
   "use strict";
-
-  const NS = "http://www.w3.org/2000/svg";
 
   function el(tag, attrs, children) {
     const e = document.createElement(tag);
@@ -42,6 +40,12 @@
     return btn;
   }
 
+  /** Entry-header timestamp, e.g. "14:07". */
+  function timeNow() {
+    const d = new Date();
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+
   // Badge icons, looked up by tool name and falling back to the tool's
   // group — so a new tool gets a sensible icon without touching this file.
   const SVG = (body) =>
@@ -70,89 +74,112 @@
     ),
   };
 
-  // ── Status Pill ──────────────────────────────────────────────────
-  class ACBStatusPill {
-    constructor() {
-      this.latency = 0;
-      this.connectedAt = Date.now();
-      this.el = el("div", { class: "acb-status-pill", "data-state": "connecting" }, []);
-      this.dot = el("span", { class: "acb-status-dot" });
-      this.text = el("span", { class: "acb-status-text" }, ["Local bridge \u2022 connecting"]);
-      this.el.appendChild(this.dot);
-      this.el.appendChild(this.text);
-      this._tick = setInterval(() => this._updateLatency(), 2000);
-    }
-    setState(state) {
-      this.el.setAttribute("data-state", state);
-      const label =
-        state === "connected" ? "connected" : state === "connecting" ? "connecting\u2026" : "disconnected";
-      this.text.textContent = `Local bridge \u2022 ${label}\u2022 ${this.latency}s`;
-      if (state === "connected") this.connectedAt = Date.now();
-    }
-    setText(text) {
-      this.text.textContent = text;
-    }
-    _updateLatency() {
-      this.latency = ((Date.now() - this.connectedAt) / 1000).toFixed(1);
-      const state = this.el.getAttribute("data-state");
-      if (state === "connected") {
-        const label = "connected";
-        this.text.textContent = `Local bridge \u2022 ${label}\u2022 ${this.latency}s`;
-      }
-    }
-    mount(root) {
-      root.appendChild(this.el);
-      return this;
-    }
-    destroy() {
-      clearInterval(this._tick);
-      this.el.remove();
-    }
-  }
+  const CHEVRON_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
 
-  // ── Stage Indicator (live tool progress) ────────────────────────
-  const STAGE_SPINNER_SVG =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
-  const STAGE_CHECK_SVG =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
-  const STAGE_X_SVG =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
-
-  class ACBStageIndicator {
+  // ── Dock — edge-docked panel with an activity timeline ──────────
+  //
+  // Collapsed, it is a vertical tab on the right edge showing connection
+  // state and the running entry count. Expanded, a panel: header (status),
+  // a scrolling timeline of widget entries, and a footer stage line that
+  // replaces the old floating stage chip.
+  class ACBDock {
     constructor() {
-      this.el = el("div", { class: "acb-stage", "data-state": "working" });
-      this.icon = el("span", { class: "acb-stage-icon" });
-      this.text = el("span", { class: "acb-stage-text" });
-      this.el.appendChild(this.icon);
-      this.el.appendChild(this.text);
-      this._clearTimer = null;
+      this.el = el("div", { class: "acb-dock", "data-open": "false", "data-conn": "connecting" });
+
+      // Collapsed: vertical tab on the right edge
+      this.tab = el("button", { class: "acb-dock-tab", title: "AI Continuity Bridge" });
+      this.tabDot = el("span", { class: "acb-status-dot" });
+      this.tabLabel = el("span", { class: "acb-dock-tab-label" }, ["BRIDGE"]);
+      this.tabBadge = el("span", { class: "acb-dock-tab-badge" }, ["0"]);
+      this.tab.appendChild(this.tabDot);
+      this.tab.appendChild(this.tabLabel);
+      this.tab.appendChild(this.tabBadge);
+      this.tab.addEventListener("click", () => this.open());
+
+      // Expanded: the panel
+      this.panel = el("div", { class: "acb-dock-panel" });
+
+      const header = el("div", { class: "acb-dock-header" });
+      const title = el("span", { class: "acb-dock-title" }, ["Bridge"]);
+      this.statusText = el("span", { class: "acb-dock-status" }, ["connecting…"]);
+      const collapse = el("button", { class: "acb-dock-collapse", title: "Collapse" });
+      collapse.innerHTML = CHEVRON_SVG;
+      collapse.addEventListener("click", () => this.close());
+      header.appendChild(title);
+      header.appendChild(this.statusText);
+      header.appendChild(collapse);
+      this.panel.appendChild(header);
+
+      this.timeline = el("div", { class: "acb-dock-timeline" });
+      this._empty = el("div", { class: "acb-dock-empty" }, ["No tool activity yet."]);
+      this.timeline.appendChild(this._empty);
+      this.panel.appendChild(this.timeline);
+
+      this.footer = el("div", { class: "acb-dock-footer", "data-state": "idle" });
+      this.footerText = el("span", { class: "acb-dock-footer-text" });
+      this.footer.appendChild(this.footerText);
+      this.panel.appendChild(this.footer);
+
+      this.el.appendChild(this.panel);
+      this.el.appendChild(this.tab);
+
+      this._stageTimer = null;
+      this.count = 0;
+      // Entries mount themselves into the timeline (widgets take a root
+      // node), so bookkeeping watches for their arrival instead of waiting
+      // to be told.
+      this._observer = new MutationObserver(() => this._sync());
+      this._observer.observe(this.timeline, { childList: true });
+    }
+    open() {
+      this.el.setAttribute("data-open", "true");
+      this._scroll();
+    }
+    close() {
+      this.el.setAttribute("data-open", "false");
+    }
+    setStatus(state) {
+      this.el.setAttribute("data-conn", state);
+      this.statusText.textContent =
+        state === "connected" ? "connected" : state === "connecting" ? "connecting…" : "disconnected";
     }
     setStage(text, state) {
-      if (this._clearTimer) {
-        clearTimeout(this._clearTimer);
-        this._clearTimer = null;
+      if (this._stageTimer) {
+        clearTimeout(this._stageTimer);
+        this._stageTimer = null;
       }
-      this.el.setAttribute("data-state", state || "working");
-      this.icon.innerHTML =
-        state === "done" ? STAGE_CHECK_SVG : state === "error" ? STAGE_X_SVG : STAGE_SPINNER_SVG;
-      this.text.textContent = text;
+      this.footer.setAttribute("data-state", state || "working");
+      this.footerText.textContent = text;
       if (state === "done" || state === "error") {
-        this._clearTimer = setTimeout(() => this.clear(), 2500);
+        this._stageTimer = setTimeout(() => {
+          this.footer.setAttribute("data-state", "idle");
+          this.footerText.textContent = "";
+        }, 2500);
       }
     }
-    clear() {
-      if (this._clearTimer) {
-        clearTimeout(this._clearTimer);
-        this._clearTimer = null;
+    _sync() {
+      const kids = this.timeline.children.length;
+      if (kids > 0 && this._empty) {
+        this._empty.remove();
+        this._empty = null;
       }
-      this.el.remove();
+      // The count only grows — dismissals remove nodes but the tab badge
+      // tracks total activity, like an unread counter for the session.
+      if (kids > this.count) {
+        this.count = kids;
+        this.el.setAttribute("data-fresh", "true");
+        setTimeout(() => this.el.removeAttribute("data-fresh"), 1000);
+      }
+      this.tabBadge.textContent = String(this.count);
+      this._scroll();
+    }
+    _scroll() {
+      this.timeline.scrollTop = this.timeline.scrollHeight;
     }
     mount(root) {
       root.appendChild(this.el);
       return this;
-    }
-    destroy() {
-      this.clear();
     }
   }
 
@@ -211,6 +238,7 @@
       header.innerHTML = `
         <span class="acb-tool-badge ${group} ${name}">${iconHtml}${name}</span>
         <span class="acb-tool-path">${escapeHtml(detail)}</span>
+        <span class="acb-widget-time">${timeNow()}</span>
       `;
       this._closeBtn = createCloseBtn();
       header.appendChild(this._closeBtn);
@@ -305,7 +333,7 @@
       const codeHtml = this.errorCode
         ? `<span class="acb-result-code">${escapeHtml(this.errorCode)}</span>`
         : "";
-      header.innerHTML = `${checkSvg}<span>${label}</span><span class="acb-result-meta">${escapeHtml(metaParts)}</span>${codeHtml}`;
+      header.innerHTML = `${checkSvg}<span class="acb-result-label">${label}</span><span class="acb-result-meta">${escapeHtml(metaParts)}</span>${codeHtml}<span class="acb-widget-time">${timeNow()}</span>`;
       this._closeBtn = createCloseBtn();
       header.appendChild(this._closeBtn);
       this.el.appendChild(header);
@@ -359,17 +387,18 @@
       this.msgId = msgId;
       this.el = el("div", {
         class: "acb-widget acb-terminal",
-        "data-expanded": "true",
+        "data-expanded": "false",
       });
       this._build();
     }
     _build() {
       // Header — click to expand/collapse, close button
-      this.header = el("div", { class: "acb-widget-header" });
+      this.header = el("div", { class: "acb-widget-header acb-terminal-header" });
       const headerInner = el("div", { style: "display:flex;align-items:center;gap:8px;flex:1;min-width:0;" });
       headerInner.innerHTML = `
         <span class="acb-terminal-prompt">$ ${escapeHtml(this.command)}</span>
-        <span class="acb-terminal-status running">Running\u2026</span>
+        <span class="acb-terminal-status running">Running…</span>
+        <span class="acb-widget-time">${timeNow()}</span>
       `;
       this.header.appendChild(headerInner);
       this._closeBtn = createCloseBtn();
@@ -382,7 +411,7 @@
       this.output = el("div", { class: "acb-terminal-output" });
       body.appendChild(this.output);
 
-      this.footer = el("div", { class: "acb-terminal-footer" }, ["Waiting for output\u2026"]);
+      this.footer = el("div", { class: "acb-terminal-footer" }, ["Waiting for output…"]);
       body.appendChild(this.footer);
       this.el.appendChild(body);
     }
@@ -416,7 +445,7 @@
       const status = this.header.querySelector(".acb-terminal-status");
       status.className = `acb-terminal-status ${ok ? "done" : "error"}`;
       status.textContent = ok ? "Done" : "Failed";
-      this.footer.textContent = `Exit code: ${ok ? "0" : "1"} \u2022 ${elapsed || "?"}`;
+      this.footer.textContent = `Exit code: ${ok ? "0" : "1"} • ${elapsed || "?"}`;
     }
     onAction(cb) {
       // Close button
@@ -499,8 +528,7 @@
 
   // ── Exports ──────────────────────────────────────────────────────
   window.ACBComponents = {
-    ACBStatusPill,
-    ACBStageIndicator,
+    ACBDock,
     ACBToolCard,
     ACBResultBlock,
     ACBTerminal,
