@@ -130,8 +130,9 @@ uvicorn main:app --port 8000 --app-dir compression-service
 | 2 | [docs/tech-stack.md](docs/tech-stack.md) | Tauri + Rust 系统栈与安全考量 |
 | 3 | [docs/protocol-v2.md](docs/protocol-v2.md) | 线上协议、工具定义、错误码、时序图 |
 | 4 | [docs/ui-design.md](docs/ui-design.md) | 控制中心 UI：活动追踪、终端、Git 面板 |
-| 5 | [requirements/product-requirements.md](requirements/product-requirements.md) | 产品与 MVP 范围、成功标准 |
-| 6 | [ongoing/facts-and-archive.md](ongoing/facts-and-archive.md) | 已完成工作：会话归档（F2）+ 事实提取（F3） |
+| 5 | [docs/tool-roadmap.md](docs/tool-roadmap.md) | 44 个工具的完整路线图：已建/待建、各阶段约束 |
+| 6 | [requirements/product-requirements.md](requirements/product-requirements.md) | 产品与 MVP 范围、成功标准 |
+| 7 | [ongoing/facts-and-archive.md](ongoing/facts-and-archive.md) | 已完成工作：会话归档（F2）+ 事实提取（F3） |
 
 ## 参与贡献
 

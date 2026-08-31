@@ -135,8 +135,9 @@ Reading the docs in this order takes you from "what is this" to "how the wire wo
 | 2 | [docs/tech-stack.md](docs/tech-stack.md) | Tauri + Rust systems stack, security rationale |
 | 3 | [docs/protocol-v2.md](docs/protocol-v2.md) | Wire protocol, tool definitions, error codes, sequence diagrams |
 | 4 | [docs/ui-design.md](docs/ui-design.md) | The control-center UI: activity trace, terminal, git panel |
-| 5 | [requirements/product-requirements.md](requirements/product-requirements.md) | Product & MVP scope, success criteria |
-| 6 | [ongoing/facts-and-archive.md](ongoing/facts-and-archive.md) | Completed work: session archive (F2) + fact extraction (F3) |
+| 5 | [docs/tool-roadmap.md](docs/tool-roadmap.md) | The 44-tool surface, phase by phase: built vs planned, and the invariants |
+| 6 | [requirements/product-requirements.md](requirements/product-requirements.md) | Product & MVP scope, success criteria |
+| 7 | [ongoing/facts-and-archive.md](ongoing/facts-and-archive.md) | Completed work: session archive (F2) + fact extraction (F3) |
 
 ## Contributing
 
