@@ -561,7 +561,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 36px 9px 12px;
+  padding: 9px 30px 9px 12px;
   background: transparent;
   border-bottom: 1px solid transparent;
   cursor: pointer;
@@ -591,18 +591,18 @@
 
 .acb-close {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 5px;
+  right: 5px;
   z-index: 10;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   border: none;
-  background: oklch(0 0 0 / 30%);
-  color: var(--acb-text-muted);
+  background: transparent;
+  color: var(--acb-text-dim);
   cursor: pointer;
   flex-shrink: 0;
   transition: background var(--acb-transition), color var(--acb-transition);
@@ -610,13 +610,26 @@
 }
 
 .acb-close:hover {
-  background: oklch(0 0 0 / 60%);
+  background: oklch(1 0 0 / 10%);
   color: var(--acb-text);
 }
 
 .acb-close svg {
-  width: 14px;
-  height: 14px;
+  width: 10px;
+  height: 10px;
+}
+
+/* In the history header the button sits in flow at the end of the row,
+   aligned with the title — not floating over it. */
+.acb-history-header .acb-close {
+  position: static;
+  width: 22px;
+  height: 22px;
+}
+
+.acb-history-header .acb-close svg {
+  width: 11px;
+  height: 11px;
 }
 
 /* ================================================================
