@@ -118,7 +118,13 @@
 
       this.footer = el("div", { class: "acb-dock-footer", "data-state": "idle" });
       this.footerText = el("span", { class: "acb-dock-footer-text" });
+      this.historyBtn = el(
+        "button",
+        { class: "acb-dock-history-btn", title: "Tool history" },
+        ["History"],
+      );
       this.footer.appendChild(this.footerText);
+      this.footer.appendChild(this.historyBtn);
       this.panel.appendChild(this.footer);
 
       this.el.appendChild(this.panel);
@@ -131,6 +137,13 @@
       // to be told.
       this._observer = new MutationObserver(() => this._sync());
       this._observer.observe(this.timeline, { childList: true });
+    }
+    /** Register the handler for the footer's History button. */
+    onHistory(cb) {
+      this.historyBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        cb();
+      });
     }
     open() {
       this.el.setAttribute("data-open", "true");
@@ -513,6 +526,87 @@
     }
   }
 
+  // ── History Panel ────────────────────────────────────────────────
+  //
+  // Persistent log of past tool calls, kept by the background script in
+  // chrome.storage — the extension's counterpart to the desktop app's
+  // audit trail. Read-only: entries render exactly what the background
+  // recorded, newest first, output expanded by clicking the row.
+  const HISTORY_STATUS = {
+    running: "running…",
+    pending: "awaiting",
+    success: "done",
+    error: "error",
+    timeout: "timeout",
+    denied: "denied",
+  };
+
+  class ACBHistoryPanel {
+    constructor(entries) {
+      this.entries = Array.isArray(entries) ? entries : [];
+      this.el = el("div", { class: "acb-history" });
+      this._build();
+    }
+    _build() {
+      const header = el("div", { class: "acb-history-header" });
+      header.appendChild(el("span", { class: "acb-dock-title" }, ["History"]));
+      header.appendChild(
+        el("span", { class: "acb-history-count" }, [`${this.entries.length} calls`]),
+      );
+      const close = createCloseBtn();
+      close.addEventListener("click", () => this.destroy());
+      header.appendChild(close);
+      this.el.appendChild(header);
+
+      const list = el("div", { class: "acb-history-list" });
+      if (this.entries.length === 0) {
+        list.appendChild(el("div", { class: "acb-dock-empty" }, ["No history yet."]));
+      }
+      // Newest first — the freshest call is what the user is after.
+      for (const entry of [...this.entries].reverse()) {
+        list.appendChild(this._entry(entry));
+      }
+      this.el.appendChild(list);
+    }
+    _entry(entry) {
+      const row = el("div", {
+        class: "acb-history-entry",
+        "data-status": entry.status || "running",
+        "data-expanded": "false",
+      });
+      const ts = entry.ts
+        ? new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : "";
+      const head = el("div", { class: "acb-history-entry-head" });
+      head.innerHTML = `
+        <span class="acb-tool-badge-icon">${ICONS[entry.tool] || ICONS.Search || ""}</span>
+        <span class="acb-history-name">${escapeHtml(entry.tool || "tool")}</span>
+        <span class="acb-history-detail">${escapeHtml(entry.detail || "")}</span>
+        <span class="acb-history-time">${ts}</span>
+        <span class="acb-history-status">${escapeHtml(HISTORY_STATUS[entry.status] || entry.status || "")}</span>
+      `;
+      row.appendChild(head);
+      if (entry.output) {
+        const out = el("div", { class: "acb-history-output" });
+        out.textContent = capText(entry.output);
+        row.appendChild(out);
+      }
+      head.addEventListener("click", () => {
+        if (!entry.output) return;
+        const expanded = row.getAttribute("data-expanded") === "true";
+        row.setAttribute("data-expanded", expanded ? "false" : "true");
+      });
+      return row;
+    }
+    mount(root) {
+      root.appendChild(this.el);
+      return this;
+    }
+    destroy() {
+      this.el.remove();
+    }
+  }
+
   // ── Exports ──────────────────────────────────────────────────────
   window.ACBComponents = {
     ACBDock,
@@ -520,6 +614,7 @@
     ACBResultBlock,
     ACBTerminal,
     ACBHandoffCard,
+    ACBHistoryPanel,
     escapeHtml,
   };
 })();

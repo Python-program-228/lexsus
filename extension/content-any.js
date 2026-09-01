@@ -181,8 +181,27 @@
       dock = new C.ACBDock();
       dock.mount(document.body);
       dock.setStatus("connecting");
+      dock.onHistory(showHistory);
+      // Pushed status only arrives on change; a fresh dock must ask for
+      // the current state or it shows "connecting…" forever.
+      chrome.runtime
+        .sendMessage({ type: "get-status" })
+        .then((s) => dock?.setStatus(s?.connected ? "connected" : "disconnected"))
+        .catch(() => {});
     }
     return dock;
+  }
+
+  /** Open the dock's History view — past tool calls from the background's
+   *  persistent log, the extension's counterpart of the desktop audit trail. */
+  function showHistory() {
+    const d = ensureDock();
+    if (!d) return;
+    d.panel.querySelector(".acb-history")?.remove();
+    chrome.runtime
+      .sendMessage({ type: "get-history" })
+      .then((entries) => new C.ACBHistoryPanel(entries).mount(d.panel))
+      .catch(() => {});
   }
 
   // ── Global close handler (event delegation — always works) ──────
@@ -191,7 +210,9 @@
     if (!closeBtn) return;
     e.stopPropagation();
     e.preventDefault();
-    const widget = closeBtn.closest(".acb-widget");
+    // The History panel is a full-dock overlay, not a timeline widget,
+    // but it closes through the same path.
+    const widget = closeBtn.closest(".acb-widget, .acb-history");
     if (widget) {
       widget.setAttribute("data-state", "dismissed");
       setTimeout(() => widget.remove(), 200);
@@ -275,7 +296,11 @@
           if (action === "insert") insertIntoComposer(output);
         });
         terminal.mount(root);
-        markStageDone();
+        // The web AI only sees what reaches the composer, so successful
+        // command output is pasted automatically — the Insert button can
+        // re-add it (or add it again after the user edits it away).
+        if (output) insertIntoComposer(output);
+        markStageInserted();
         return;
       }
 
@@ -321,7 +346,9 @@
         if (action === "insert") insertIntoComposer(output);
       });
       terminal.mount(root);
-      r.ok ? markStageDone() : markStageFailed();
+      // Mirror the v2 path: paste successful output for the web AI.
+      if (r.ok && output) insertIntoComposer(output);
+      r.ok ? markStageInserted() : markStageFailed();
       return;
     }
 

@@ -84,6 +84,7 @@ function handleTimeout(id) {
       },
       null,
     );
+    recordOutcome(id, "timeout");
     pendingRequests.delete(id);
   }
 }
@@ -97,6 +98,45 @@ setInterval(() => {
     }
   }
 }, 30000);
+
+// ── History ───────────────────────────────────────────────────────
+//
+// Persistent log of tool calls and their outcomes, capped so
+// chrome.storage stays small. The dock's History view reads this; the
+// desktop app's audit trail remains the authoritative record.
+const HISTORY_KEY = "toolHistory";
+const HISTORY_LIMIT = 200;
+const HISTORY_OUTPUT_CAP = 4000;
+
+function recordCall(id, toolName, args) {
+  const detail = args?.path || args?.command || args?.name || "";
+  chrome.storage.local.get(HISTORY_KEY, ({ [HISTORY_KEY]: list = [] }) => {
+    list.push({
+      id,
+      tool: toolName,
+      detail: String(detail).slice(0, 120),
+      status: "running",
+      ts: Date.now(),
+    });
+    if (list.length > HISTORY_LIMIT) list.splice(0, list.length - HISTORY_LIMIT);
+    chrome.storage.local.set({ [HISTORY_KEY]: list });
+  });
+}
+
+function recordOutcome(id, status, output) {
+  chrome.storage.local.get(HISTORY_KEY, ({ [HISTORY_KEY]: list = [] }) => {
+    const entry = list.find((e) => e.id === id);
+    if (!entry) return;
+    entry.status = status;
+    if (typeof output === "string") {
+      entry.output =
+        output.length > HISTORY_OUTPUT_CAP
+          ? output.slice(0, HISTORY_OUTPUT_CAP) + "\n[output truncated]"
+          : output;
+    }
+    chrome.storage.local.set({ [HISTORY_KEY]: list });
+  });
+}
 
 // ── Tab routing ───────────────────────────────────────────────────
 //
@@ -197,9 +237,17 @@ let pingMissed = 0;
 let pingTimer = null;
 
 function statusUpdate() {
+  // `!!socket` would read "connected" while the handshake is still in
+  // flight — the dock is only truly live once pairing succeeded.
+  const connected = paired && !!socket && socket.readyState === WebSocket.OPEN;
+  // runtime.sendMessage reaches the popup and other extension pages but,
+  // per Chrome's message-passing rules, never content scripts — those
+  // need tabs.sendMessage. Without the broadcast, every dock in every
+  // tab stays on its initial "connecting…" forever.
   chrome.runtime
-    .sendMessage({ type: "status", paired, connected: !!socket })
+    .sendMessage({ type: "status", paired, connected })
     .catch(() => {});
+  forwardToTabs({ type: "status", paired, connected }, null);
 }
 
 function connect() {
@@ -269,6 +317,7 @@ function connect() {
         if (msg.id && pendingRequests.has(msg.id)) {
           untrackRequest(msg.id);
         }
+        recordOutcome(msg.id, msg.status, msg.result?.output ?? msg.error?.message);
         forwardToTabs(msg, null);
         break;
       }
@@ -362,6 +411,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ paired, connected: !!socket, serverVersion });
       break;
 
+    // Persistent tool history for the dock's History view.
+    case "get-history": {
+      chrome.storage.local.get(HISTORY_KEY, ({ [HISTORY_KEY]: list }) =>
+        sendResponse(list || []),
+      );
+      return true; // async sendResponse
+    }
+
     // ── Protocol v2: tool_call ─────────────────────────────────
     case "tool": {
       if (!socket || socket.readyState !== WebSocket.OPEN || !paired) {
@@ -382,6 +439,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       };
 
       trackRequest(id, { name: toolName, arguments: toolArgs }, sender.tab?.id);
+      recordCall(id, toolName, toolArgs);
       socket.send(JSON.stringify(v2Msg));
       sendResponse({ ok: true, id });
       break;
