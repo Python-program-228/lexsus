@@ -8,6 +8,15 @@
 (() => {
   "use strict";
 
+  // A tab can end up with two copies of this script: the manifest injects
+  // at document_idle, while the background injects programmatically when a
+  // tabs.sendMessage fails during the page-load race (a tab still loading
+  // looks identical to a tab with no content script). A second copy would
+  // scan the same transcript with its own dedup set — every tool call sent
+  // twice, executed twice. Re-injection must be a no-op.
+  if (window.__ACB_CONTENT) return;
+  window.__ACB_CONTENT = true;
+
   // tool-spec.js, ui-components.js and styles.css are injected automatically
   // by the manifest's content_scripts declaration (they run before this).
   const C = window.ACBComponents;

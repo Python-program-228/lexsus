@@ -191,6 +191,12 @@ async function deliver(tab, msg) {
   } catch {
     // No receiver yet — fall through and inject.
   }
+  // A tab still loading gets the manifest's declared script at
+  // document_idle; injecting now would leave two live copies scanning
+  // the same transcript (every tool call sent and executed twice). The
+  // fresh script pulls its own status via get-status, so dropping this
+  // one message costs nothing.
+  if (tab.status === "loading") return false;
   try {
     let pending = injecting.get(tab.id);
     if (!pending) {

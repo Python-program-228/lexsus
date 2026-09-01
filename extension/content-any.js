@@ -8,6 +8,13 @@
 (() => {
   "use strict";
 
+  // Same guard as content.js: the manifest injects at document_idle and the
+  // background injects programmatically when a tabs.sendMessage fails during
+  // the page-load race. A second copy would re-scan the transcript with its
+  // own dedup set — every tool call sent twice, executed twice.
+  if (window.__ACB_CONTENT) return;
+  window.__ACB_CONTENT = true;
+
   const host = (() => {
     const h = location.hostname;
     if (h.includes("claude.ai")) return "claudeai";
