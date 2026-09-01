@@ -5,13 +5,14 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { SquareTerminalIcon } from "lucide-react";
 import type { TerminalRunEvent } from "../lib/types";
+import { useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
 
-/** Matches --surface-2 / --foreground tokens; xterm needs concrete values. */
-const TERMINAL_THEME = {
-  background: "#16171c",
-  foreground: "#eceef2",
-};
+/** xterm needs concrete values; these mirror the --terminal tokens. */
+const TERMINAL_THEMES = {
+  dark: { background: "#16171c", foreground: "#eceef2" },
+  light: { background: "#fbfbf8", foreground: "#26262b" },
+} as const;
 
 /**
  * Read-only command terminal: streams every `run_command` the web AI
@@ -21,7 +22,12 @@ const TERMINAL_THEME = {
  */
 export default function TerminalPane() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
   const [running, setRunning] = useState(false);
+  const theme = useTheme();
+  // The mount effect only needs the initial value — recreating the
+  // terminal on toggle would lose scrollback.
+  const themeRef = useRef(theme);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -33,8 +39,9 @@ export default function TerminalPane() {
       fontSize: 13,
       scrollback: 5000,
       cursorBlink: false,
-      theme: TERMINAL_THEME,
+      theme: TERMINAL_THEMES[themeRef.current],
     });
+    termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
@@ -77,8 +84,16 @@ export default function TerminalPane() {
       unlisten?.();
       ro.disconnect();
       term.dispose();
+      termRef.current = null;
     };
   }, []);
+
+  // xterm can't read CSS vars — swap concrete hex values when the theme flips.
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.options.theme = TERMINAL_THEMES[theme];
+    }
+  }, [theme]);
 
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-surface">
@@ -96,7 +111,7 @@ export default function TerminalPane() {
         </span>
       </header>
       <div className="min-h-0 flex-1 p-2">
-        <div className="h-full w-full overflow-hidden rounded-md border border-border/60 bg-[#16171c]">
+        <div className="h-full w-full overflow-hidden rounded-md border border-border/60 bg-terminal">
           <div ref={containerRef} className="h-full w-full p-1.5" />
         </div>
       </div>
