@@ -420,12 +420,12 @@ fn now_millis() -> u64 {
 // --- pairing + handoff -------------------------------------------------------
 
 /// Get (or generate) the 6-digit pairing code for the extension.
+/// Session-scoped: never persisted — see the bootstrap note in `run()`.
 #[tauri::command]
 fn pair_get_code(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<String, String> {
     let mut code = state.pair_code.lock().unwrap();
     if code.is_empty() {
         *code = ws::new_pair_code();
-        let _ = db::set_setting(&state.conn.lock().unwrap(), "pair_code", &code);
         let _ = app.emit("pair://code", code.clone());
     }
     Ok(code.clone())
@@ -880,14 +880,13 @@ pub fn run() {
             let db_path = dir.join("bridge.db");
             let conn = db::open_and_migrate(&db_path).map_err(|e| e.to_string())?;
             let root = db::get_setting(&conn, "project_root").ok().flatten();
-            let code = match db::get_setting(&conn, "pair_code").ok().flatten() {
-                Some(c) if !c.is_empty() => c,
-                _ => {
-                    let c = ws::new_pair_code();
-                    let _ = db::set_setting(&conn, "pair_code", &c);
-                    c
-                }
-            };
+            // Pairing code: fresh from the CSPRNG at every launch, memory
+            // only. It used to be persisted in SQLite and reused forever —
+            // a standing credential that any local process could brute
+            // force at leisure (or read straight out of the DB). The
+            // extension re-pairs once per app session, like Bluetooth.
+            let _ = db::delete_setting(&conn, "pair_code");
+            let code = ws::new_pair_code();
             let state = app.state::<AppState>();
             *state.conn.lock().unwrap() = conn;
             *state.project_root.lock().unwrap() = root.map(PathBuf::from);

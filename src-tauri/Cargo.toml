@@ -30,3 +30,5 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Local WebSocket server for the browser extension (M2) — loopback only,
 # plain ws:// on 127.0.0.1, no TLS needed.
 tungstenite = "0.24"
+# Pairing codes come from the OS CSPRNG (clock-derived codes were guessable).
+getrandom = "0.2"

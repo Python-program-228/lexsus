@@ -213,6 +213,12 @@ pub fn get_setting(conn: &Connection, key: &str) -> rusqlite::Result<Option<Stri
     }
 }
 
+/// Remove a setting entirely (pairing codes must not linger in the DB).
+pub fn delete_setting(conn: &Connection, key: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+    Ok(())
+}
+
 /// Persist a parsed trace step.
 pub fn record_trace_step(
     conn: &Connection,

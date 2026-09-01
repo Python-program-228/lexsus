@@ -6,9 +6,12 @@ import {
   GitBranchIcon,
   GlobeIcon,
   MessageCircleIcon,
+  MoonIcon,
   PanelLeftCloseIcon,
   PanelLeftIcon,
+  SunIcon,
 } from "lucide-react";
+import { toggleTheme, useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
 
 export type View = "trace" | "git" | "handoff" | "memory" | "bridge";
@@ -46,6 +49,7 @@ export default function WorkbenchRail({
   const [open, setOpen] = useState(
     () => localStorage.getItem(RAIL_KEY) === "1",
   );
+  const theme = useTheme();
 
   useEffect(() => {
     localStorage.setItem(RAIL_KEY, open ? "1" : "0");
@@ -161,6 +165,13 @@ export default function WorkbenchRail({
       <div className="grow" />
 
       <div className="flex flex-col gap-0.5">
+        {renderRow({
+          key: "theme",
+          label: theme === "dark" ? "Dark theme" : "Light theme",
+          icon: theme === "dark" ? MoonIcon : SunIcon,
+          onClick: toggleTheme,
+        })}
+
         {renderRow({
           key: "project",
           label: "Project & pairing",

@@ -10,37 +10,69 @@
 //!   app → ext: {"type":"pair-ok","proto":2,"server_version":"0.2.0"}
 //!   ext → app: {"type":"tool_call","id":"<uuid>","tool":"read_file","arguments":{...}}
 //!   app → ext: {"type":"tool_result","id":"<uuid>","status":"success","result":{...}}
-//!   ext → app: {"type":"tool_approve","id":"<uuid>","allow":true}
 //!   ext → app: {"type":"ping"} → {"type":"pong"}
 //!   app → ext: {"type":"handoff","payload":{...}}  (pushed)
+//!
+//! Gated tools return a "pending" tool_result only in the sense that the
+//! tool_call blocks until the desktop UI resolves the approval — the
+//! WebSocket can never resolve one. An earlier protocol let the extension
+//! send {"type":"tool_approve"}, but the extension's approval buttons
+//! lived in the host page's DOM, where any page script could approve via
+//! a synthetic click, so that path was removed. Approvals resolve solely
+//! through the desktop app (`bridge_approve` in lib.rs).
 //!
 //! Protocol v1 (legacy, still accepted):
 //!   ext → app: {"type":"tool","id":1,"tool":{"ReadFile":{"path":"..."}}}
 //!   app → ext: {"type":"tool-result","id":1,"result":{...}}
-//!   ext → app: {"type":"approve","id":1,"allow":true}
 
 use crate::AppState;
 use serde_json::json;
 use std::io::ErrorKind;
 use std::net::TcpListener;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
+use tungstenite::handshake::server::{Request, Response};
 use tungstenite::protocol::Message;
 
 pub const ADDR: &str = "127.0.0.1:45241";
 pub const PROTOCOL_VERSION: u32 = 2;
 pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Generate a fresh 6-digit pairing code.
+/// Pairing brute-force throttle. Six digits = 900k possibilities, and any
+/// local process can open a socket to the loopback port — without a
+/// lockout the code is brute-forceable in minutes. Five failed guesses
+/// lock pairing for a minute, and every wrong guess costs half a second
+/// before the rejection is sent.
+static PAIR_FAILURES: AtomicU32 = AtomicU32::new(0);
+static PAIR_LOCKED_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+const MAX_PAIR_FAILURES: u32 = 5;
+const PAIR_LOCKOUT: Duration = Duration::from_secs(60);
+const PAIR_FAIL_DELAY: Duration = Duration::from_millis(500);
+
+/// Generate a fresh 6-digit pairing code from the OS CSPRNG. The previous
+/// clock-nanoseconds derivation was predictable — an attacker who could
+/// guess roughly when the code was generated had a tiny search space.
 pub fn new_pair_code() -> String {
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let code = (seed % 900_000 + 100_000) as u32;
-    format!("{code:06}")
+    let mut buf = [0u8; 4];
+    getrandom::getrandom(&mut buf).expect("OS CSPRNG unavailable");
+    let n = u32::from_le_bytes(buf) % 900_000 + 100_000;
+    format!("{n:06}")
+}
+
+/// Only browser extensions may open this socket. A missing `Origin` is a
+/// non-browser local client; a web-page origin (http/https/file) must be
+/// rejected at the handshake — that is a page probing localhost, which is
+/// exactly the threat the pairing code exists for.
+fn origin_allowed(req: &Request) -> bool {
+    match req.headers().get("Origin") {
+        None => true,
+        Some(v) => {
+            let s = v.to_str().unwrap_or("");
+            s.starts_with("chrome-extension://") || s.starts_with("moz-extension://")
+        }
+    }
 }
 
 /// Bind the listener and accept connections forever (detached thread).
@@ -172,7 +204,24 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
     stream
         .set_read_timeout(Some(Duration::from_millis(100)))
         .ok();
-    let ws = match tungstenite::accept(stream) {
+    // accept_hdr lives at the crate root (tungstenite re-exports it from the
+    // private `server` module), while the Request/Response types come from
+    // `handshake::server` — hence the two different paths below.
+    let ws = match tungstenite::accept_hdr(
+        stream,
+        |req: &Request, resp: Response| {
+            if origin_allowed(req) {
+                Ok(resp)
+            } else {
+                eprintln!("[ws] handshake rejected: origin not allowed");
+                // A statically-valid 403 can't fail to build; unwrap is safe.
+                Err(tungstenite::http::Response::builder()
+                    .status(403)
+                    .body(Some("origin not allowed".into()))
+                    .unwrap())
+            }
+        },
+    ) {
         Ok(ws) => ws,
         Err(e) => {
             eprintln!("[ws] handshake failed: {e}");
@@ -214,9 +263,25 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
         }
         match ty {
             "pair" => {
+                // Locked out? Reject before even looking at the code.
+                {
+                    let mut lock = PAIR_LOCKED_UNTIL.lock().unwrap();
+                    if let Some(until) = *lock {
+                        if Instant::now() < until {
+                            drop(lock);
+                            let mut w = ws.lock().unwrap();
+                            let _ = w.send(Message::Text(
+                                json!({"type": "pair-error", "error": "too many failed attempts — try again in a minute"}).to_string(),
+                            ));
+                            break;
+                        }
+                        *lock = None; // lockout expired
+                    }
+                }
                 let state = app.state::<AppState>();
                 let expected = state.pair_code.lock().unwrap().clone();
                 if parsed["code"].as_str() == Some(expected.as_str()) {
+                    PAIR_FAILURES.store(0, Ordering::SeqCst);
                     paired = true;
                     state.ws_connected.store(true, Ordering::SeqCst);
                     *state.ws_tx.lock().unwrap() = Some(ws.clone());
@@ -238,6 +303,17 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                     ));
                     eprintln!("[ws] extension paired (proto={PROTOCOL_VERSION})");
                 } else {
+                    // Count the failure and maybe lock pairing out. The
+                    // sleep slows each guess; the lockout stops a
+                    // determined brute force outright.
+                    let fails = PAIR_FAILURES.fetch_add(1, Ordering::SeqCst) + 1;
+                    if fails >= MAX_PAIR_FAILURES {
+                        *PAIR_LOCKED_UNTIL.lock().unwrap() =
+                            Some(Instant::now() + PAIR_LOCKOUT);
+                        PAIR_FAILURES.store(0, Ordering::SeqCst);
+                        eprintln!("[ws] pairing locked for {PAIR_LOCKOUT:?} after {fails} failed attempts");
+                    }
+                    std::thread::sleep(PAIR_FAIL_DELAY);
                     let mut w = ws.lock().unwrap();
                     let _ = w.send(Message::Text(
                         json!({"type": "pair-error", "error": "invalid code"}).to_string(),
@@ -308,78 +384,23 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
             }
 
             // ── Protocol v2: tool_approve ───────────────────────────
+            // Deliberately inert: approvals resolve only in the desktop
+            // UI. The extension's Allow/Deny buttons used to live in the
+            // host page's DOM, where any page script could approve via a
+            // synthetic `.click()`, so the WS path that executed these
+            // was removed. Reply with an error so a stale extension gets
+            // a clear message instead of a dropped connection.
             "tool_approve" => {
-                let id_str = parsed["id"].as_str().unwrap_or("");
-                let allow = parsed["allow"].as_bool().unwrap_or(false);
-                let state = app.state::<AppState>();
-                let root = state.project_root.lock().unwrap().clone();
-                let mut stream = crate::command_stream(&app);
-
-                // Try to resolve by string ID first, then by parsed u64
-                let id_num: u64 = id_str.parse().unwrap_or(0);
-                let outcome = state.bridge.lock().unwrap().resolve(
-                    id_num,
-                    allow,
-                    root.as_deref(),
-                    Some(&mut stream),
-                );
-
-                let result = match outcome {
-                    Some((result, req)) => {
-                        let _ = crate::db::record_audit(
-                            &state.conn.lock().unwrap(),
-                            &req.source,
-                            "tool",
-                            &serde_json::json!(req.tool).to_string(),
-                            allow,
-                            if allow { "user" } else { "denied" },
-                            result.ok,
-                        );
-                        if allow && result.ok {
-                            crate::record_tool_trace(&state, &app, &req.tool);
-                        }
-                        let _ = app.emit(
-                            "bridge://approval-resolved",
-                            json!({"id": id_str, "allowed": allow, "result": result}),
-                        );
-                        result
-                    }
-                    None => crate::bridge::ToolResult {
-                        ok: false,
-                        output: None,
-                        error: Some("unknown approval id".into()),
-                        error_code: None,
-                        pending: None,
-                    },
-                };
-
-                let meta = None;
-                let (status, result_val, error_val) = if result.ok {
-                    (
-                        "success".to_string(),
-                        json!({"output": result.output}),
-                        serde_json::Value::Null,
-                    )
-                } else if !allow {
-                    (
-                        "denied".to_string(),
-                        serde_json::Value::Null,
-                        json!({"code": "DENIED", "message": result.error.unwrap_or_default()}),
-                    )
-                } else {
-                    (
-                        "error".to_string(),
-                        serde_json::Value::Null,
-                        json!({"code": "EXECUTION_FAILED", "message": result.error.unwrap_or_default()}),
-                    )
-                };
                 let mut w = ws.lock().unwrap();
                 let _ = w.send(Message::Text(make_tool_result_v2(
-                    id_str,
-                    &status,
-                    Some(result_val),
-                    Some(error_val),
-                    meta,
+                    parsed["id"].as_str().unwrap_or(""),
+                    "error",
+                    None,
+                    Some(json!({
+                        "code": "APPROVAL_DESKTOP_ONLY",
+                        "message": "approvals are handled in the desktop app",
+                    })),
+                    None,
                 )));
             }
 
@@ -408,48 +429,13 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
             }
 
             // ── Legacy v1: approve ──────────────────────────────────
+            // Inert for the same reason as v2's tool_approve above.
             "approve" => {
-                let id = parsed["id"].as_u64().unwrap_or(0);
-                let allow = parsed["allow"].as_bool().unwrap_or(false);
-                let state = app.state::<AppState>();
-                let root = state.project_root.lock().unwrap().clone();
-                let mut stream = crate::command_stream(&app);
-                let outcome = state.bridge.lock().unwrap().resolve(
-                    id,
-                    allow,
-                    root.as_deref(),
-                    Some(&mut stream),
-                );
-                let result = match outcome {
-                    Some((result, req)) => {
-                        let _ = crate::db::record_audit(
-                            &state.conn.lock().unwrap(),
-                            &req.source,
-                            "tool",
-                            &serde_json::json!(req.tool).to_string(),
-                            allow,
-                            if allow { "user" } else { "denied" },
-                            result.ok,
-                        );
-                        if allow && result.ok {
-                            crate::record_tool_trace(&state, &app, &req.tool);
-                        }
-                        let _ = app.emit(
-                            "bridge://approval-resolved",
-                            json!({"id": id, "allowed": allow, "result": result}),
-                        );
-                        result
-                    }
-                    None => crate::bridge::ToolResult {
-                        ok: false,
-                        output: None,
-                        error: Some("unknown approval id".into()),
-                        error_code: None,
-                        pending: None,
-                    },
-                };
                 let mut w = ws.lock().unwrap();
-                let _ = w.send(Message::Text(make_tool_result_v1(id, &result)));
+                let _ = w.send(Message::Text(make_tool_result_v1(
+                    parsed["id"].as_u64().unwrap_or(0),
+                    &crate::bridge::ToolResult::err("approvals are handled in the desktop app"),
+                )));
             }
 
             "handoff-request" => {

@@ -119,6 +119,8 @@ body {
   /* workbench surfaces + semantic status */
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
+  --color-terminal: var(--terminal);
+  --color-terminal-foreground: var(--terminal-foreground);
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
@@ -137,10 +139,76 @@ body {
 }
 
 /*
- * Refined dark-only theme. Values live in :root — the app never renders
- * light — while main.tsx still adds `.dark` so HeroUI's dark styles apply.
+ * Two themes. Light is the print-like default look: off-white surfaces
+ * with near-black borders. Dark is the refined palette the app shipped
+ * with. Values live on :root (light) and .dark; main.tsx applies the
+ * persisted preference at boot, and useTheme's toggle flips both these
+ * tokens and HeroUI's dark styles.
  */
 :root {
+  /* surfaces — off-white paper hierarchy */
+  --background: oklch(0.955 0.003 260);
+  --surface: oklch(0.965 0.002 260);
+  --surface-2: oklch(0.93 0.004 260);
+
+  --foreground: oklch(0.17 0 0);
+  --muted-foreground: oklch(0.45 0 0);
+
+  --card: var(--surface);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.975 0.002 260);
+  --popover-foreground: var(--foreground);
+
+  /* one accent — the same teal, darkened for white surfaces */
+  --primary: oklch(0.62 0.11 180);
+  --primary-foreground: oklch(0.98 0.005 180);
+
+  --secondary: oklch(0.92 0.004 260);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.92 0.004 260);
+  --accent: oklch(0.9 0.005 260);
+  --accent-foreground: var(--foreground);
+
+  /* semantic status — darkened for contrast on white */
+  --success: oklch(0.6 0.13 165);
+  --success-foreground: oklch(0.98 0.01 165);
+  --warning: oklch(0.68 0.13 80);
+  --warning-foreground: oklch(0.98 0.01 80);
+  --danger: oklch(0.55 0.19 25);
+  --danger-foreground: oklch(0.98 0.01 25);
+  --info: oklch(0.58 0.11 235);
+  --info-foreground: oklch(0.98 0.01 235);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--danger-foreground);
+
+  /* near-black borders — the light theme's signature */
+  --border: oklch(0.15 0 0);
+  --input: oklch(0.15 0 0);
+  --ring: oklch(0.62 0.11 180 / 50%);
+
+  /* terminal surfaces (xterm needs concrete values; TerminalPane mirrors) */
+  --terminal: #fbfbf8;
+  --terminal-foreground: #26262b;
+
+  --chart-1: var(--primary);
+  --chart-2: var(--info);
+  --chart-3: var(--warning);
+  --chart-4: var(--success);
+  --chart-5: var(--danger);
+
+  --radius: 0.5rem;
+
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+.dark {
   /* surfaces — 3-level hierarchy, matched to the terminal */
   --background: oklch(0.145 0.004 260);
   --surface: oklch(0.175 0.005 260);
@@ -180,6 +248,9 @@ body {
   --input: oklch(1 0 0 / 12%);
   --ring: oklch(0.77 0.12 180 / 50%);
 
+  --terminal: #16171c;
+  --terminal-foreground: #eceef2;
+
   --chart-1: var(--primary);
   --chart-2: var(--info);
   --chart-3: var(--warning);
@@ -199,7 +270,8 @@ body {
 }
 
 .dark {
-  /* dark-only app: tokens already live in :root; kept for HeroUI selectors */
+  /* tokens live on :root and .dark above; this block stays for HeroUI's
+     own `.dark` selectors. */
 }
 
 @layer base {

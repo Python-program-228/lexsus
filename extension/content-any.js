@@ -8,6 +8,13 @@
 (() => {
   "use strict";
 
+  // Same guard as content.js: the manifest injects at document_idle and the
+  // background injects programmatically when a tabs.sendMessage fails during
+  // the page-load race. A second copy would re-scan the transcript with its
+  // own dedup set — every tool call sent twice, executed twice.
+  if (window.__ACB_CONTENT) return;
+  window.__ACB_CONTENT = true;
+
   const host = (() => {
     const h = location.hostname;
     if (h.includes("claude.ai")) return "claudeai";
@@ -158,9 +165,9 @@
     }
   };
 
-  // Mutations from our own floating UI would otherwise schedule a scan on
-  // every widget mount and every composer insert.
-  const OWN = "#acb-root, .acb-stage, .acb-status-pill, .acb-handoff-overlay, .acb-toast";
+  // Mutations from our own dock would otherwise schedule a scan on every
+  // entry mount and every composer insert.
+  const OWN = "#acb-dock, .acb-handoff-overlay, .acb-toast";
 
   const observer = new MutationObserver((records) => {
     const relevant = records.some((r) => {
@@ -173,18 +180,35 @@
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
-  // ── Root + status ───────────────────────────────────────────────
-  let root = null;
-  let statusPill = null;
+  // ── Dock (panel + timeline) ─────────────────────────────────────
+  let dock = null;
 
-  function ensureRoot() {
-    if (!root) {
-      root = document.createElement("div");
-      root.id = "acb-root";
-      root.className = "acb-root";
-      document.body.appendChild(root);
+  function ensureDock() {
+    if ((!dock || !dock.el.isConnected) && C) {
+      dock = new C.ACBDock();
+      dock.mount(document.body);
+      dock.setStatus("connecting");
+      dock.onHistory(showHistory);
+      // Pushed status only arrives on change; a fresh dock must ask for
+      // the current state or it shows "connecting…" forever.
+      chrome.runtime
+        .sendMessage({ type: "get-status" })
+        .then((s) => dock?.setStatus(s?.connected ? "connected" : "disconnected"))
+        .catch(() => {});
     }
-    return root;
+    return dock;
+  }
+
+  /** Open the dock's History view — past tool calls from the background's
+   *  persistent log, the extension's counterpart of the desktop audit trail. */
+  function showHistory() {
+    const d = ensureDock();
+    if (!d) return;
+    d.panel.querySelector(".acb-history")?.remove();
+    chrome.runtime
+      .sendMessage({ type: "get-history" })
+      .then((entries) => new C.ACBHistoryPanel(entries).mount(d.panel))
+      .catch(() => {});
   }
 
   // ── Global close handler (event delegation — always works) ──────
@@ -193,69 +217,21 @@
     if (!closeBtn) return;
     e.stopPropagation();
     e.preventDefault();
-    const widget = closeBtn.closest(".acb-widget");
+    // The History panel is a full-dock overlay, not a timeline widget,
+    // but it closes through the same path.
+    const widget = closeBtn.closest(".acb-widget, .acb-history");
     if (widget) {
       widget.setAttribute("data-state", "dismissed");
       setTimeout(() => widget.remove(), 200);
-    } else {
-      closeBtn.closest(".acb-status-pill")?.remove();
     }
   }, true);
 
-  function ensureStatusPill() {
-    if (!statusPill && C) {
-      statusPill = new C.ACBStatusPill();
-      statusPill.mount(document.body);
-      statusPill.setState("connecting");
-    }
-    return statusPill;
-  }
-
-  // ── Stage indicator (live tool progress) ────────────────────────
-  let stage = null;
-  function ensureStage() {
-    if ((!stage || !stage.el.isConnected) && C) {
-      stage = new C.ACBStageIndicator();
-      stage.mount(document.body);
-    }
-    return stage;
-  }
-  const showWorkingStage = (tool) => ensureStage()?.setStage(S.stageLabel(tool), "working");
-  const markStageDone = () => ensureStage()?.setStage("Finished ✓", "done");
-  const markStageInserted = () => ensureStage()?.setStage("Inserted ✓", "done");
-  const markStageFailed = () => ensureStage()?.setStage("Failed ✗", "error");
-  const markStageAwait = () => ensureStage()?.setStage("Awaiting approval…", "working");
-
-  // ── Stacked widget management (iOS-style) ───────────────────────
-  const MAX_VISIBLE = 3;
-
-  function limitVisibleWidgets() {
-    const r = ensureRoot();
-    const widgets = r.querySelectorAll(".acb-widget");
-    widgets.forEach((w, i) => {
-      if (i < widgets.length - MAX_VISIBLE) {
-        w.setAttribute("data-visible", "false");
-      } else {
-        w.removeAttribute("data-visible");
-      }
-    });
-    const oldBadge = r.querySelector(".acb-stack-more");
-    if (oldBadge) oldBadge.remove();
-    const hidden = r.querySelectorAll('[data-visible="false"]');
-    if (hidden.length > 0) {
-      const badge = document.createElement("div");
-      badge.className = "acb-stack-more";
-      badge.textContent = `+${hidden.length} more`;
-      badge.addEventListener("click", () => {
-        hidden.forEach((w) => {
-          w.setAttribute("data-visible", "true");
-          w.setAttribute("data-expanded", "false");
-        });
-        badge.remove();
-      });
-      r.appendChild(badge);
-    }
-  }
+  // ── Stage (dock footer line) ────────────────────────────────────
+  const showWorkingStage = (tool) => ensureDock()?.setStage(S.stageLabel(tool), "working");
+  const markStageDone = () => ensureDock()?.setStage("Finished ✓", "done");
+  const markStageInserted = () => ensureDock()?.setStage("Inserted ✓", "done");
+  const markStageFailed = () => ensureDock()?.setStage("Failed ✗", "error");
+  const markStageAwait = () => ensureDock()?.setStage("Awaiting approval…", "working");
 
   // ── Widget rendering ────────────────────────────────────────────
   const TARGET_LABEL = {
@@ -283,7 +259,8 @@
   }
 
   function showToolWidget(msg) {
-    const root = ensureRoot();
+    const root = ensureDock()?.timeline;
+    if (!root) return;
 
     // Handle v2 tool_result format
     if (msg.type === "tool_result") {
@@ -293,18 +270,12 @@
       const meta = msg.meta || {};
 
       if (status === "pending") {
+        // Informational only: approval happens in the desktop app, whose
+        // window no page script can reach. The final tool_result arrives
+        // here once the desktop resolves it.
         markStageAwait();
         const toolObj = { name: meta.tool || "tool", arguments: meta };
-        const card = new C.ACBToolCard(toolObj, msg.id);
-        card.onAction((action) => {
-          chrome.runtime.sendMessage({
-            type: "approve",
-            id: msg.id,
-            allow: action === "allow",
-          });
-        });
-        card.mount(root);
-        limitVisibleWidgets();
+        new C.ACBToolCard(toolObj, msg.id).mount(root);
         return;
       }
 
@@ -316,7 +287,6 @@
           { detail: meta.path || meta.command || meta.detail || "", errorCode: error.code || "" },
         );
         resultBlock.mount(root);
-        limitVisibleWidgets();
         return;
       }
 
@@ -333,8 +303,11 @@
           if (action === "insert") insertIntoComposer(output);
         });
         terminal.mount(root);
-        limitVisibleWidgets();
-        markStageDone();
+        // The web AI only sees what reaches the composer, so successful
+        // command output is pasted automatically — the Insert button can
+        // re-add it (or add it again after the user edits it away).
+        if (output) insertIntoComposer(output);
+        markStageInserted();
         return;
       }
 
@@ -356,7 +329,6 @@
         }
       });
       resultBlock.mount(root);
-      limitVisibleWidgets();
       markStageDone();
       return;
     }
@@ -366,17 +338,9 @@
     const t = S.normalizeTool(msg.tool) || { name: "tool", args: {} };
 
     if (r.pending) {
-      const card = new C.ACBToolCard(msg.tool || {}, msg.id);
+      // Informational only — approval resolves in the desktop app.
       markStageAwait();
-      card.onAction((action) => {
-        chrome.runtime.sendMessage({
-          type: "approve",
-          id: msg.id,
-          allow: action === "allow",
-        });
-      });
-      card.mount(root);
-      limitVisibleWidgets();
+      new C.ACBToolCard(msg.tool || {}, msg.id).mount(root);
       return;
     }
 
@@ -389,8 +353,9 @@
         if (action === "insert") insertIntoComposer(output);
       });
       terminal.mount(root);
-      limitVisibleWidgets();
-      r.ok ? markStageDone() : markStageFailed();
+      // Mirror the v2 path: paste successful output for the web AI.
+      if (r.ok && output) insertIntoComposer(output);
+      r.ok ? markStageInserted() : markStageFailed();
       return;
     }
 
@@ -412,7 +377,6 @@
       }
     });
     result.mount(root);
-    limitVisibleWidgets();
     r.ok ? markStageDone() : markStageFailed();
   }
 
@@ -436,10 +400,7 @@
     // v1: tool-result (legacy)
     if (msg.type === "tool-result" && msg.result) showToolWidget(msg);
     if (msg.type === "status") {
-      ensureStatusPill();
-      if (statusPill) {
-        statusPill.setState(msg.connected ? "connected" : "disconnected");
-      }
+      ensureDock()?.setStatus(msg.connected ? "connected" : "disconnected");
     }
   });
 })();

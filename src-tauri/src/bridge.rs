@@ -686,30 +686,60 @@ fn human_bytes(n: usize) -> String {
     }
 }
 
+/// Lexically normalize a path: resolve `.` and `..` components without
+/// touching the filesystem (symlink resolution is the existing-path
+/// branch's job, via `canonicalize`). A `..` that would pop past the
+/// path's own root is kept as a literal `..`, so a containment check on
+/// the result still sees the escape instead of silently wrapping.
+fn normalize_path(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 /// Resolve a tool path against the project root; rejects paths escaping it.
 fn resolve_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let candidate = root.join(rel);
-    let canonical = if candidate.exists() {
-        candidate.canonicalize().map_err(|e| e.to_string())?
-    } else {
-        // The target may not exist yet (write_file to a new file):
-        // canonicalize the deepest existing ancestor instead.
-        let mut parent = candidate.parent().unwrap_or(&root).to_path_buf();
-        while !parent.exists() {
-            if !parent.pop() {
-                break;
-            }
+    if candidate.exists() {
+        // Existing target: canonicalize resolves symlinks and `..` for real.
+        let canonical = candidate.canonicalize().map_err(|e| e.to_string())?;
+        if !canonical.starts_with(&root) {
+            return Err(format!("path escapes project root: {rel}"));
         }
-        parent
-            .canonicalize()
-            .map(|p| p.join(rel.trim_start_matches(['\\', '/'])))
-            .map_err(|e| e.to_string())?
-    };
-    if !canonical.starts_with(&root) {
+        return Ok(canonical);
+    }
+    // The target may not exist yet (write_file to a new file). Canonicalize
+    // the deepest existing ancestor, then re-append the non-existent
+    // remainder — lexically normalized first: re-joining the raw `rel`
+    // would leave literal `..` components in place, and the component-wise
+    // starts_with check below does not resolve them, so
+    // `notes/../../../.bashrc` would pass and the OS would resolve the
+    // `..`s at write time, escaping the root.
+    let mut parent = candidate.parent().unwrap_or(&root).to_path_buf();
+    while !parent.exists() {
+        if !parent.pop() {
+            break;
+        }
+    }
+    let canonical_parent = parent.canonicalize().map_err(|e| e.to_string())?;
+    let remainder = candidate.strip_prefix(&parent).map_err(|e| e.to_string())?;
+    let normalized = normalize_path(&canonical_parent.join(remainder));
+    if !normalized.starts_with(&root) {
         return Err(format!("path escapes project root: {rel}"));
     }
-    Ok(canonical)
+    Ok(normalized)
 }
 
 /// Execute a tool call locally. `root: None` → tool requires the root.
@@ -992,6 +1022,32 @@ mod tests {
         #[cfg(windows)]
         assert!(resolve_path(&dir, "..\\outside").is_err());
         assert!(resolve_path(&dir, "sub").is_ok());
+    }
+
+    #[test]
+    fn resolve_path_rejects_dotdot_on_missing_target() {
+        // The fallback branch (target doesn't exist yet) used to re-join
+        // the raw rel, leaving literal `..` components that the
+        // component-wise starts_with check does not resolve — so this
+        // wrote to <home>/.bashrc while claiming to stay in the root.
+        let dir = std::env::temp_dir();
+        assert!(resolve_path(&dir, "notes/../../../.bashrc").is_err());
+        assert!(resolve_path(&dir, "a/b/../../../outside.txt").is_err());
+        assert!(resolve_path(&dir, "/etc/passwd-ish").is_err());
+        // `..` that cancels out inside the root is still fine.
+        let ok = resolve_path(&dir, "a/../b.txt").unwrap();
+        assert!(ok.ends_with("b.txt"), "{ok:?}");
+        assert!(ok.starts_with(dir.canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn resolve_path_new_file_in_new_dir_stays_in_root() {
+        // write_file's common legit case: deepest existing ancestor is the
+        // root itself, remainder creates new directories.
+        let dir = std::env::temp_dir();
+        let p = resolve_path(&dir, "new_dir/nested/file.txt").unwrap();
+        assert!(p.ends_with("new_dir/nested/file.txt"));
+        assert!(p.starts_with(dir.canonicalize().unwrap()));
     }
 
     #[test]

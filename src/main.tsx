@@ -4,11 +4,11 @@ import { I18nProvider } from "@heroui/react";
 import App from "./App";
 import { Toaster } from "./components/ui/toast";
 import { TooltipProvider } from "./components/ui/tooltip";
+import { applyTheme, loadTheme } from "./hooks/useTheme";
 import "./index.css";
 import "./App.css";
 
-document.documentElement.classList.add("dark");
-document.documentElement.setAttribute("data-theme", "dark");
+applyTheme(loadTheme());
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
