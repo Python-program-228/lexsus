@@ -621,13 +621,15 @@
   padding: 0 4px;
 }
 
-.acb-tool-actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
+/* Informational note replacing the old in-page Allow/Deny row: the
+   approval decision belongs to the desktop app, which no page script
+   can reach. */
+.acb-tool-note {
   padding: 8px 14px;
   border-top: 1px solid var(--acb-border);
-  background: transparent;
+  color: var(--acb-text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
 }
 
 /* ================================================================
@@ -654,6 +656,8 @@
   transform: scale(0.97);
 }
 
+/* Used by the handoff card's Continue/Dismiss pair. The tool card no
+   longer renders Allow/Deny — approvals resolve in the desktop app. */
 .acb-btn--allow {
   background: var(--acb-green);
   color: oklch(0.18 0.03 190);

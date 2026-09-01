@@ -388,24 +388,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     // ── Protocol v2: tool_approve ──────────────────────────────
-    case "approve": {
-      const approveId = msg.id;
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        // Try v2 format first
-        socket.send(
-          JSON.stringify({
-            id: approveId,
-            type: "tool_approve",
-            allow: !!msg.allow,
-            timestamp: Date.now(),
-          }),
-        );
-        sendResponse({ ok: true });
-      } else {
-        sendResponse({ ok: false });
-      }
+    // Approvals resolve in the desktop app only. The host page's DOM is
+    // untrusted: a synthetic click on an in-page Allow button must never
+    // be able to execute a gated tool, so this relay is closed.
+    case "approve":
+      sendResponse({
+        ok: false,
+        error: "approvals are handled in the desktop app",
+      });
       break;
-    }
 
     case "handoff-request":
       console.log("[ACB] handoff-request received", { hasSocket: !!socket, open: socket?.readyState === WebSocket.OPEN, paired });

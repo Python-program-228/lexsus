@@ -10,14 +10,20 @@
 //!   app → ext: {"type":"pair-ok","proto":2,"server_version":"0.2.0"}
 //!   ext → app: {"type":"tool_call","id":"<uuid>","tool":"read_file","arguments":{...}}
 //!   app → ext: {"type":"tool_result","id":"<uuid>","status":"success","result":{...}}
-//!   ext → app: {"type":"tool_approve","id":"<uuid>","allow":true}
 //!   ext → app: {"type":"ping"} → {"type":"pong"}
 //!   app → ext: {"type":"handoff","payload":{...}}  (pushed)
+//!
+//! Gated tools return a "pending" tool_result only in the sense that the
+//! tool_call blocks until the desktop UI resolves the approval — the
+//! WebSocket can never resolve one. An earlier protocol let the extension
+//! send {"type":"tool_approve"}, but the extension's approval buttons
+//! lived in the host page's DOM, where any page script could approve via
+//! a synthetic click, so that path was removed. Approvals resolve solely
+//! through the desktop app (`bridge_approve` in lib.rs).
 //!
 //! Protocol v1 (legacy, still accepted):
 //!   ext → app: {"type":"tool","id":1,"tool":{"ReadFile":{"path":"..."}}}
 //!   app → ext: {"type":"tool-result","id":1,"result":{...}}
-//!   ext → app: {"type":"approve","id":1,"allow":true}
 
 use crate::AppState;
 use serde_json::json;
@@ -308,78 +314,23 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
             }
 
             // ── Protocol v2: tool_approve ───────────────────────────
+            // Deliberately inert: approvals resolve only in the desktop
+            // UI. The extension's Allow/Deny buttons used to live in the
+            // host page's DOM, where any page script could approve via a
+            // synthetic `.click()`, so the WS path that executed these
+            // was removed. Reply with an error so a stale extension gets
+            // a clear message instead of a dropped connection.
             "tool_approve" => {
-                let id_str = parsed["id"].as_str().unwrap_or("");
-                let allow = parsed["allow"].as_bool().unwrap_or(false);
-                let state = app.state::<AppState>();
-                let root = state.project_root.lock().unwrap().clone();
-                let mut stream = crate::command_stream(&app);
-
-                // Try to resolve by string ID first, then by parsed u64
-                let id_num: u64 = id_str.parse().unwrap_or(0);
-                let outcome = state.bridge.lock().unwrap().resolve(
-                    id_num,
-                    allow,
-                    root.as_deref(),
-                    Some(&mut stream),
-                );
-
-                let result = match outcome {
-                    Some((result, req)) => {
-                        let _ = crate::db::record_audit(
-                            &state.conn.lock().unwrap(),
-                            &req.source,
-                            "tool",
-                            &serde_json::json!(req.tool).to_string(),
-                            allow,
-                            if allow { "user" } else { "denied" },
-                            result.ok,
-                        );
-                        if allow && result.ok {
-                            crate::record_tool_trace(&state, &app, &req.tool);
-                        }
-                        let _ = app.emit(
-                            "bridge://approval-resolved",
-                            json!({"id": id_str, "allowed": allow, "result": result}),
-                        );
-                        result
-                    }
-                    None => crate::bridge::ToolResult {
-                        ok: false,
-                        output: None,
-                        error: Some("unknown approval id".into()),
-                        error_code: None,
-                        pending: None,
-                    },
-                };
-
-                let meta = None;
-                let (status, result_val, error_val) = if result.ok {
-                    (
-                        "success".to_string(),
-                        json!({"output": result.output}),
-                        serde_json::Value::Null,
-                    )
-                } else if !allow {
-                    (
-                        "denied".to_string(),
-                        serde_json::Value::Null,
-                        json!({"code": "DENIED", "message": result.error.unwrap_or_default()}),
-                    )
-                } else {
-                    (
-                        "error".to_string(),
-                        serde_json::Value::Null,
-                        json!({"code": "EXECUTION_FAILED", "message": result.error.unwrap_or_default()}),
-                    )
-                };
                 let mut w = ws.lock().unwrap();
                 let _ = w.send(Message::Text(make_tool_result_v2(
-                    id_str,
-                    &status,
-                    Some(result_val),
-                    Some(error_val),
-                    meta,
+                    parsed["id"].as_str().unwrap_or(""),
+                    "error",
+                    None,
+                    Some(json!({
+                        "code": "APPROVAL_DESKTOP_ONLY",
+                        "message": "approvals are handled in the desktop app",
+                    })),
+                    None,
                 )));
             }
 
@@ -408,48 +359,13 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
             }
 
             // ── Legacy v1: approve ──────────────────────────────────
+            // Inert for the same reason as v2's tool_approve above.
             "approve" => {
-                let id = parsed["id"].as_u64().unwrap_or(0);
-                let allow = parsed["allow"].as_bool().unwrap_or(false);
-                let state = app.state::<AppState>();
-                let root = state.project_root.lock().unwrap().clone();
-                let mut stream = crate::command_stream(&app);
-                let outcome = state.bridge.lock().unwrap().resolve(
-                    id,
-                    allow,
-                    root.as_deref(),
-                    Some(&mut stream),
-                );
-                let result = match outcome {
-                    Some((result, req)) => {
-                        let _ = crate::db::record_audit(
-                            &state.conn.lock().unwrap(),
-                            &req.source,
-                            "tool",
-                            &serde_json::json!(req.tool).to_string(),
-                            allow,
-                            if allow { "user" } else { "denied" },
-                            result.ok,
-                        );
-                        if allow && result.ok {
-                            crate::record_tool_trace(&state, &app, &req.tool);
-                        }
-                        let _ = app.emit(
-                            "bridge://approval-resolved",
-                            json!({"id": id, "allowed": allow, "result": result}),
-                        );
-                        result
-                    }
-                    None => crate::bridge::ToolResult {
-                        ok: false,
-                        output: None,
-                        error: Some("unknown approval id".into()),
-                        error_code: None,
-                        pending: None,
-                    },
-                };
                 let mut w = ws.lock().unwrap();
-                let _ = w.send(Message::Text(make_tool_result_v1(id, &result)));
+                let _ = w.send(Message::Text(make_tool_result_v1(
+                    parsed["id"].as_u64().unwrap_or(0),
+                    &crate::bridge::ToolResult::err("approvals are handled in the desktop app"),
+                )));
             }
 
             "handoff-request" => {

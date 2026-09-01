@@ -261,12 +261,13 @@
         body.appendChild(cmdEl);
       }
 
-      const actions = el("div", { class: "acb-tool-actions" });
-      actions.innerHTML = `
-        <button class="acb-btn acb-btn--deny" data-action="deny">Deny</button>
-        <button class="acb-btn acb-btn--allow" data-action="allow">Allow</button>
-      `;
-      body.appendChild(actions);
+      // Approvals resolve in the desktop app only. Allow/Deny buttons here
+      // would live in the host page's DOM, where any page script could
+      // approve via a synthetic `.click()` — no isTrusted check can make
+      // that safe — so this card is informational.
+      const note = el("div", { class: "acb-tool-note" });
+      note.textContent = "Approval required — allow or deny in the desktop app";
+      body.appendChild(note);
       this.el.appendChild(body);
     }
     onAction(cb) {
@@ -282,20 +283,6 @@
         if (e.target.closest(".acb-close")) return;
         const expanded = this.el.getAttribute("data-expanded") === "true";
         this.el.setAttribute("data-expanded", expanded ? "false" : "true");
-      });
-      // Allow/Deny buttons
-      this.el.addEventListener("click", (e) => {
-        const btn = e.target.closest("[data-action]");
-        if (!btn) return;
-        const action = btn.getAttribute("data-action");
-        if (action === "allow") {
-          this.el.setAttribute("data-state", "approved");
-          setTimeout(() => this.el.remove(), 120);
-        } else if (action === "deny") {
-          this.el.setAttribute("data-state", "denied");
-          setTimeout(() => this.el.remove(), 100);
-        }
-        cb(action);
       });
     }
     mount(root) {

@@ -204,18 +204,12 @@
       const meta = msg.meta || {};
 
       if (status === "pending") {
-        // Show tool card with Allow/Deny
+        // Informational only: approval happens in the desktop app, whose
+        // window no page script can reach. The final tool_result arrives
+        // here once the desktop resolves it.
         markStageAwait();
         const toolObj = { name: meta.tool || "tool", arguments: meta };
-        const card = new C.ACBToolCard(toolObj, msg.id);
-        card.onAction((action) => {
-          chrome.runtime.sendMessage({
-            type: "approve",
-            id: msg.id,
-            allow: action === "allow",
-          });
-        });
-        card.mount(root);
+        new C.ACBToolCard(toolObj, msg.id).mount(root);
         return;
       }
 
@@ -274,16 +268,9 @@
     const t = S.normalizeTool(msg.tool) || { name: "tool", args: {} };
 
     if (r.pending) {
-      const card = new C.ACBToolCard(msg.tool || {}, msg.id);
+      // Informational only — approval resolves in the desktop app.
       markStageAwait();
-      card.onAction((action) => {
-        chrome.runtime.sendMessage({
-          type: "approve",
-          id: msg.id,
-          allow: action === "allow",
-        });
-      });
-      card.mount(root);
+      new C.ACBToolCard(msg.tool || {}, msg.id).mount(root);
       return;
     }
 

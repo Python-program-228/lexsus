@@ -447,7 +447,7 @@
       `{"tool":"${example.name}","path":"path/to/file.ext","content":"<entire new file content>"}`,
       '```',
       ``,
-      `${gated.map((t) => t.name).join(" and ")} pause for the user's Allow/Deny — wait for the result rather than assuming it succeeded.`,
+      `${gated.map((t) => t.name).join(" and ")} pause for the user's approval (given in the desktop app) — wait for the result rather than assuming it succeeded.`,
       // The core numbers every read and pages large files; without this the AI
       // treats the first chunk as the whole file and invents the rest.
       `Reads come back as numbered lines ("   1| ..."). A large file arrives one`,
