@@ -1,0 +1,12 @@
+{
+  "servers": [
+    {
+      "name": "macos",
+      "command": "npx",
+      "args": ["-y", "@cursortouch/macos-mcp"],
+      "env": {},
+      "enabled": true,
+      "timeout_secs": 60
+    }
+  ]
+}
