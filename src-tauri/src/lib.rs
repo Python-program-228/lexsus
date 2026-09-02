@@ -10,9 +10,15 @@ pub mod facts;
 
 pub mod git;
 
+pub mod mcp;
+
 pub mod pty;
 
+pub mod process;
+
 pub mod shell;
+
+pub mod task;
 
 pub mod transcript;
 
@@ -252,7 +258,12 @@ pub(crate) fn command_stream(app: &AppHandle) -> impl FnMut(bridge::CommandEvent
 
 /// Route a tool call through the approval policy. Shared by the
 /// `bridge_tool` command (desktop) and the WebSocket handler (web).
-pub(crate) fn tool_call(app: &AppHandle, tool: bridge::Tool, source: &str) -> bridge::ToolResult {
+pub(crate) fn tool_call(
+    app: &AppHandle,
+    tool: bridge::Tool,
+    source: &str,
+    request_id: Option<&str>,
+) -> bridge::ToolResult {
     let state = app.state::<AppState>();
     let root = state.project_root.lock().unwrap().clone();
     let (result, approval_id) =
@@ -266,11 +277,12 @@ pub(crate) fn tool_call(app: &AppHandle, tool: bridge::Tool, source: &str) -> br
         let _ = db::record_audit(
             &state.conn.lock().unwrap(),
             source,
-            "tool",
+            bridge::tool_name(&tool),
             &serde_json::json!(tool).to_string(),
             true,
             "auto",
             result.ok,
+            request_id,
         );
         if result.ok {
             record_tool_trace(&state, app, &tool);
@@ -283,6 +295,23 @@ pub(crate) fn tool_call(app: &AppHandle, tool: bridge::Tool, source: &str) -> br
         serde_json::json!({"id": _id, "summary": summary, "source": source}),
     );
     if source == "web" {
+        // Tell the extension immediately that the call is parked on a
+        // user approval — previously it heard nothing until resolution
+        // and often assumed the connection had died.
+        if let Some(req_id) = request_id {
+            ws::send(
+                app,
+                serde_json::json!({
+                    "type": "tool_result",
+                    "id": req_id,
+                    "status": "pending",
+                    "result": {"summary": summary},
+                    "error": null,
+                    "meta": {"tool": bridge::tool_name(&tool), "approval_id": _id},
+                    "timestamp": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+                }),
+            );
+        }
         // WS caller: wait for the user's decision (up to 5 minutes).
         let (tx, rx) = bridge::wait_channel();
         state
@@ -311,7 +340,7 @@ fn bridge_tool(
     tool: bridge::Tool,
 ) -> Result<bridge::ToolResult, String> {
     let _ = &state;
-    Ok(tool_call(&app, tool, "desktop"))
+    Ok(tool_call(&app, tool, "desktop", None))
 }
 
 /// Resolve a pending approval: execute (allow) or deny.
@@ -323,21 +352,59 @@ fn bridge_approve(
     allow: bool,
 ) -> Result<bridge::ToolResult, String> {
     let root = state.project_root.lock().unwrap().clone();
+    // Peek the request before resolving: if it came from the extension,
+    // stream command output to it as `tool_stream` frames as well as to
+    // the desktop UI.
+    let ws_request_id = state
+        .bridge
+        .lock()
+        .unwrap()
+        .pending
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|p| p.id == id)
+        .and_then(|p| p.request_id.clone());
     let mut stream = command_stream(&app);
+    let mut combined = |ev: bridge::CommandEvent| {
+        if let Some(req_id) = ws_request_id.as_deref() {
+            let frame = match &ev {
+                bridge::CommandEvent::Start { command } => serde_json::json!({
+                    "type": "tool_stream", "id": req_id, "kind": "start",
+                    "command": command,
+                }),
+                bridge::CommandEvent::Output { data } => serde_json::json!({
+                    "type": "tool_stream", "id": req_id, "kind": "output",
+                    "data": data,
+                }),
+                bridge::CommandEvent::Exit {
+                    code,
+                    timed_out,
+                    truncated,
+                } => serde_json::json!({
+                    "type": "tool_stream", "id": req_id, "kind": "exit",
+                    "code": code, "timed_out": timed_out, "truncated": truncated,
+                }),
+            };
+            ws::send(&app, frame);
+        }
+        stream(ev);
+    };
     let (result, req) = state
         .bridge
         .lock()
         .unwrap()
-        .resolve(id, allow, root.as_deref(), Some(&mut stream))
+        .resolve(id, allow, root.as_deref(), Some(&mut combined))
         .ok_or_else(|| "no such approval request".to_string())?;
     let _ = db::record_audit(
         &state.conn.lock().unwrap(),
         &req.source,
-        "tool",
+        bridge::tool_name(&req.tool),
         &serde_json::json!(req.tool).to_string(),
         allow,
         if allow { "user" } else { "denied" },
         result.ok,
+        req.request_id.as_deref(),
     );
     if allow && result.ok {
         record_tool_trace(&state, &app, &req.tool);
@@ -858,6 +925,175 @@ fn facts_extract(state: State<'_, AppState>) -> Result<FactsSnapshot, String> {
 // --- app bootstrap -----------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Wire up MCP: register the bridge dispatcher, then autostart servers
+/// from `mcp.json` on a background thread (spawning + handshake can take
+/// seconds and must not delay the UI).
+fn setup_mcp(app_data_dir: &std::path::Path) {
+    bridge::set_mcp_dispatcher(Box::new(|server, tool, args| {
+        let mgr = mcp::manager();
+        match mgr.call_tool(server, tool, args) {
+            Ok(v) => bridge::ToolResult::ok(mcp_result_to_text(&v)),
+            Err(e) => bridge::ToolResult::err_code(bridge::ErrorCode::ExecutionFailed, e),
+        }
+    }));
+
+    let path = app_data_dir.join("mcp.json");
+    thread::spawn(move || {
+        let cfg = match mcp::load_config(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[mcp] {e}");
+                return;
+            }
+        };
+        if cfg.servers.is_empty() {
+            return;
+        }
+        let mgr = mcp::manager();
+        for srv in cfg.servers.iter().filter(|s| s.enabled) {
+            // Register the child pid as soon as the process exists, so the
+            // process registry / task cancellation can stop it.
+            if let Err(e) = mgr.connect(srv) {
+                eprintln!("[mcp] connect '{}' failed: {e}", srv.name);
+            }
+        }
+    });
+}
+
+/// Flatten an MCP `tools/call` result into text for the AI. MCP returns
+/// `{content: [{type: "text", text}, ...], isError?}`; images and other
+/// content types are summarized, not embedded.
+fn mcp_result_to_text(v: &serde_json::Value) -> String {
+    if let Some(content) = v.get("content").and_then(|c| c.as_array()) {
+        let mut out = String::new();
+        for item in content {
+            match item.get("type").and_then(|t| t.as_str()) {
+                Some("text") => {
+                    if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
+                        out.push_str(t);
+                        out.push('\n');
+                    }
+                }
+                Some(other) => {
+                    out.push_str(&format!("[{other} content omitted]\n"));
+                }
+                None => {}
+            }
+        }
+        if v.get("isError").and_then(|e| e.as_bool()) == Some(true) {
+            out.push_str("[MCP reported an error]\n");
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
+    serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
+}
+
+// --- task commands (Agent Runtime, Phase 1) -----------------------------------
+
+#[tauri::command]
+fn task_create(
+    state: State<'_, AppState>,
+    title: String,
+    objective: String,
+    source: Option<String>,
+) -> Result<task::Task, String> {
+    task::create_task(
+        &state.conn.lock().unwrap(),
+        &title,
+        &objective,
+        source.as_deref().unwrap_or("desktop"),
+        None,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn task_list(state: State<'_, AppState>, limit: Option<usize>) -> Result<Vec<task::Task>, String> {
+    task::list_tasks(&state.conn.lock().unwrap(), limit.unwrap_or(50)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn task_status(state: State<'_, AppState>, id: String) -> Result<Option<task::Task>, String> {
+    task::get_task(&state.conn.lock().unwrap(), &id).map_err(|e| e.to_string())
+}
+
+fn task_do_transition(
+    state: &State<'_, AppState>,
+    id: &str,
+    to: task::TaskState,
+    reason: &str,
+) -> Result<task::Task, String> {
+    task::transition(&state.conn.lock().unwrap(), id, to, reason).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn task_pause(state: State<'_, AppState>, id: String) -> Result<task::Task, String> {
+    task_do_transition(&state, &id, task::TaskState::Paused, "paused by user")
+}
+
+#[tauri::command]
+fn task_resume(state: State<'_, AppState>, id: String) -> Result<task::Task, String> {
+    task_do_transition(&state, &id, task::TaskState::Executing, "resumed by user")
+}
+
+#[tauri::command]
+fn task_cancel(state: State<'_, AppState>, id: String) -> Result<task::Task, String> {
+    // Stop the task's child processes first, then move the state machine
+    // through `cancelling` — never straight to a terminal state, so the
+    // history records that cleanup actually happened.
+    process::registry().kill_task(&id, Duration::from_millis(500));
+    let _ = task_do_transition(&state, &id, task::TaskState::Cancelling, "cancel requested");
+    task_do_transition(&state, &id, task::TaskState::Cancelled, "cancelled by user")
+}
+
+#[tauri::command]
+fn task_history(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<task::StateTransition>, String> {
+    task::history(&state.conn.lock().unwrap(), &id).map_err(|e| e.to_string())
+}
+
+// --- process registry commands -------------------------------------------------
+
+#[tauri::command]
+fn process_list() -> Vec<process::ProcessEntry> {
+    process::registry().list()
+}
+
+#[tauri::command]
+fn process_kill(state: State<'_, AppState>, id: u64) -> Result<bool, String> {
+    let entry = process::registry().get(id);
+    let ok = process::registry().kill(id, Duration::from_millis(500));
+    if let (true, Some(e)) = (ok, entry) {
+        let _ = db::record_process_exit(&state.conn.lock().unwrap(), e.pid, None);
+    }
+    Ok(ok)
+}
+
+// --- MCP commands ---------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct McpServerStatus {
+    name: String,
+}
+
+#[tauri::command]
+fn mcp_servers() -> Vec<McpServerStatus> {
+    mcp::manager()
+        .connected_servers()
+        .into_iter()
+        .map(|name| McpServerStatus { name })
+        .collect()
+}
+
+#[tauri::command]
+fn mcp_tools() -> Vec<mcp::McpToolInfo> {
+    mcp::manager().list_tools()
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -893,6 +1129,7 @@ pub fn run() {
             *state.pair_code.lock().unwrap() = code;
             ws::spawn_server(app.handle().clone());
             spawn_failover_ticker(app.handle().clone());
+            setup_mcp(&dir);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -927,8 +1164,24 @@ pub fn run() {
             sessions_list,
             session_events_get,
             facts_extract,
+            task_create,
+            task_list,
+            task_status,
+            task_pause,
+            task_resume,
+            task_cancel,
+            task_history,
+            process_list,
+            process_kill,
+            mcp_servers,
+            mcp_tools,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
-    app.run(|_handle, _event| {});
+    app.run(|_handle, event| {
+        // Never orphan child processes (PTY shells, MCP servers).
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            process::registry().kill_all(Duration::from_millis(500));
+        }
+    });
 }

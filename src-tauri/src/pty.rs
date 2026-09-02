@@ -41,7 +41,7 @@ pub fn run_command(
     timeout: Duration,
     max_output: usize,
 ) -> std::io::Result<CommandOutput> {
-    run_command_stream(Shell::detect(), cmd, cwd, timeout, max_output, &mut |_| {})
+    run_command_stream(Shell::detect(), cmd, cwd, timeout, max_output, &mut |_| {}, None)
 }
 
 /// Run a shell command with an explicit shell, streaming each output chunk
@@ -55,6 +55,7 @@ pub fn run_command_stream(
     timeout: Duration,
     max_output: usize,
     on_output: &mut dyn FnMut(String),
+    on_spawn: Option<&mut dyn FnMut(u32)>,
 ) -> std::io::Result<CommandOutput> {
     let pair = open_pty(DEFAULT_ROWS, DEFAULT_COLS)?;
     let mut builder = shell.run_command(cmd);
@@ -64,6 +65,11 @@ pub fn run_command_stream(
         .spawn_command(builder)
         .map_err(|e| io_err(e.to_string()))?;
     drop(pair.slave);
+    // Report the child pid so the caller can register it in the process
+    // registry (task cancellation kills by pid, not by guesswork).
+    if let (Some(cb), Some(pid)) = (on_spawn, child.process_id()) {
+        cb(pid);
+    }
     let mut reader = pair
         .master
         .try_clone_reader()
@@ -218,6 +224,7 @@ mod tests {
             Duration::from_secs(20),
             1_048_576,
             &mut |chunk| chunks.push_str(&chunk),
+            None,
         )
         .unwrap();
         assert_eq!(out.exit_code, Some(0));
@@ -280,6 +287,7 @@ mod tests {
                 Duration::from_secs(30),
                 1_048_576,
                 &mut |_| {},
+                None,
             )
             .unwrap();
             assert_eq!(out.exit_code, Some(0), "shell {shell:?}: {:?}", out.output);
@@ -297,6 +305,7 @@ mod tests {
             Duration::from_secs(20),
             1_048_576,
             &mut |_| {},
+            None,
         )
         .unwrap();
         assert_eq!(out.exit_code, Some(0));

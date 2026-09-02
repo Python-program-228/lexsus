@@ -46,6 +46,19 @@ pub enum Tool {
     },
     /// Meta: every available tool, grouped. Needs no project root.
     ListTools,
+    /// Call a tool on a connected MCP server (e.g. MacOS-MCP). Routed via
+    /// the MCP dispatcher registered by `lib.rs`; `read_only` mirrors the
+    /// server's `annotations.readOnlyHint` and drives the approval gate:
+    /// read-only calls auto-approve, everything else always asks — MCP
+    /// tools like MacOS-MCP can drive the whole GUI, so "not declared
+    /// read-only" is treated as dangerous by default.
+    McpCall {
+        server: String,
+        tool: String,
+        args: serde_json::Value,
+        #[serde(default)]
+        read_only: bool,
+    },
 }
 
 /// When a tool call requires an explicit user decision.
@@ -90,7 +103,7 @@ pub struct ToolSpec {
 
 /// Manifest group order.
 pub const GROUPS: &[&str] = &[
-    "Reading", "Editing", "Commands", "Search", "Git", "Planning", "Meta",
+    "Reading", "Editing", "Commands", "Search", "Git", "Planning", "Meta", "MCP",
 ];
 
 /// Every tool the bridge can execute.
@@ -172,6 +185,22 @@ pub const SPECS: &[ToolSpec] = &[
         auto_insert: true,
         group: "Meta",
     },
+    // MCP calls arrive as `mcp_call` with server/tool/args; the concrete
+    // MCP tools (`mcp__server__tool`) are registered dynamically by the
+    // extension from the manager's tool list. The row's `Always` approval
+    // is the *default* for write-capable tools — `needs_approval` lowers
+    // read-only ones (`read_only: true`) to Auto per call.
+    ToolSpec {
+        name: "mcp_call",
+        aliases: &["mcp", "call_mcp"],
+        args: "server, tool, args?",
+        summary: "Call a tool on a connected MCP server (e.g. MacOS-MCP)",
+        approval: Approval::Always,
+        trace_kind: Some("mcp"),
+        timeout_ms: 60_000,
+        auto_insert: false,
+        group: "MCP",
+    },
 ];
 
 /// Canonical name of a tool variant.
@@ -184,6 +213,7 @@ pub fn tool_name(tool: &Tool) -> &'static str {
         Tool::GitStatus => "git_status",
         Tool::DescribeTool { .. } => "describe_tool",
         Tool::ListTools => "list_tools",
+        Tool::McpCall { .. } => "mcp_call",
     }
 }
 
@@ -279,7 +309,11 @@ pub fn tool_paths(tool: &Tool) -> Vec<&str> {
         | Tool::ListDirectory { path } => {
             vec![path.as_str()]
         }
-        Tool::RunCommand { .. } | Tool::GitStatus | Tool::DescribeTool { .. } | Tool::ListTools => {
+        Tool::RunCommand { .. }
+        | Tool::GitStatus
+        | Tool::DescribeTool { .. }
+        | Tool::ListTools
+        | Tool::McpCall { .. } => {
             vec![]
         }
     }
@@ -299,6 +333,7 @@ pub fn detail(tool: &Tool) -> Option<String> {
         Tool::WriteFile { path, content } => Some(format!("{path} ({} bytes)", content.len())),
         Tool::RunCommand { command } => Some(command.clone()),
         Tool::DescribeTool { name } => Some(name.clone()),
+        Tool::McpCall { server, tool, .. } => Some(format!("{server}::{tool}")),
         Tool::GitStatus | Tool::ListTools => None,
     }
 }
@@ -428,6 +463,28 @@ pub struct ApprovalRequest {
     pub tool: Tool,
     pub summary: String,
     pub source: String, // web | desktop
+    /// The WS request id that triggered this approval (web calls only), so
+    /// streamed command output and the final result can be correlated with
+    /// the original `tool_call` frame. Filled from [`execution_owner`].
+    pub request_id: Option<String>,
+}
+
+// --- execution context -----------------------------------------------------------
+
+thread_local! {
+    /// Who owns the tool call executing on this thread: the WS request id
+    /// for extension-driven calls. Set by the WS handler before dispatch
+    /// and read by `submit` / the PTY spawn hook, so approvals, streams
+    /// and process-registry entries all point back at the same request.
+    static EXECUTION_OWNER: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn set_execution_owner(owner: Option<String>) {
+    EXECUTION_OWNER.with(|o| *o.borrow_mut() = owner);
+}
+
+pub fn execution_owner() -> Option<String> {
+    EXECUTION_OWNER.with(|o| o.borrow().clone())
 }
 
 /// Bridge state shared via AppState.
@@ -462,6 +519,7 @@ impl Bridge {
                     summary: describe(&tool),
                     tool,
                     source: source.to_string(),
+                    request_id: execution_owner(),
                 });
                 (
                     ToolResult::pending(format!("{reason} (request #{id})")),
@@ -555,6 +613,23 @@ pub fn is_sensitive_path(path: &Path) -> bool {
 /// Derived entirely from the tool's [`ToolSpec`] — adding a tool means
 /// adding a `SPECS` row, not editing this function.
 pub fn needs_approval(tool: &Tool) -> Option<String> {
+    // MCP calls are gated per call rather than per spec row: a tool whose
+    // server declared `annotations.readOnlyHint` is a read; anything else
+    // (including "server didn't say") can drive the GUI or the filesystem
+    // and always asks.
+    if let Tool::McpCall {
+        server,
+        tool: name,
+        read_only,
+        ..
+    } = tool
+    {
+        return if *read_only {
+            None
+        } else {
+            Some(format!("MCP tool call {server}::{name}"))
+        };
+    }
     let s = spec(tool);
     match s.approval {
         Approval::Auto => None,
@@ -764,6 +839,16 @@ pub fn execute(
                 ),
             };
         }
+        // MCP calls need no project root — they are forwarded to the MCP
+        // manager registered at app startup.
+        Tool::McpCall {
+            server,
+            tool: name,
+            args,
+            ..
+        } => {
+            return dispatch_mcp(server, name, args.clone());
+        }
         _ => {}
     }
 
@@ -854,6 +939,20 @@ pub fn execute(
                         cb(CommandEvent::Output { data: chunk });
                     }
                 };
+                // Register the child pid so task cancellation / process
+                // management can find and kill it (TERM → KILL, tree-wide).
+                let label = command.clone();
+                let mut reg_id: Option<u64> = None;
+                let mut on_spawn = |pid: u32| {
+                    reg_id = Some(crate::process::registry().register(
+                        pid,
+                        crate::process::ProcessKind::Command,
+                        label.clone(),
+                        // Owned by the WS request (or task) that triggered
+                        // this command — cancellation kills by this id.
+                        execution_owner(),
+                    ));
+                };
                 pty::run_command_stream(
                     Shell::detect(),
                     command,
@@ -861,8 +960,14 @@ pub fn execute(
                     Duration::from_secs(120),
                     1_048_576,
                     &mut forward,
+                    Some(&mut on_spawn),
                 )
             };
+            // The child has exited one way or another — drop it from the
+            // registry so `list` only shows live processes.
+            if let Some(id) = reg_id {
+                crate::process::registry().unregister(id);
+            }
             let out = match out {
                 Ok(o) => o,
                 Err(e) => {
@@ -956,13 +1061,37 @@ pub fn execute(
             ToolResult::ok(out)
         }
         // Handled above, before the project-root check.
-        Tool::DescribeTool { .. } | Tool::ListTools => unreachable!(),
+        Tool::DescribeTool { .. } | Tool::ListTools | Tool::McpCall { .. } => unreachable!(),
     }
 }
 
 /// Create a channel a WS caller can wait on for approval resolution.
 pub fn wait_channel() -> (SyncSender<ToolResult>, Receiver<ToolResult>) {
     sync_channel(1)
+}
+
+// --- MCP dispatch ---------------------------------------------------------------
+
+/// How the bridge reaches the MCP manager without a circular dependency:
+/// `lib.rs` registers a dispatcher at startup; `execute` calls it.
+pub type McpDispatcher = Box<dyn Fn(&str, &str, serde_json::Value) -> ToolResult + Send + Sync>;
+
+static MCP_DISPATCH: std::sync::OnceLock<McpDispatcher> = std::sync::OnceLock::new();
+
+/// Register the MCP dispatcher (called once from `lib.rs::run`). When MCP
+/// is not configured, calls fail closed with a clear error.
+pub fn set_mcp_dispatcher(dispatcher: McpDispatcher) {
+    let _ = MCP_DISPATCH.set(dispatcher);
+}
+
+fn dispatch_mcp(server: &str, tool: &str, args: serde_json::Value) -> ToolResult {
+    match MCP_DISPATCH.get() {
+        Some(dispatch) => dispatch(server, tool, args),
+        None => ToolResult::err_code(
+            ErrorCode::InternalError,
+            "MCP is not configured (no mcp.json loaded)".to_string(),
+        ),
+    }
 }
 
 #[cfg(test)]

@@ -144,6 +144,10 @@ fn tool_meta(tool: &crate::bridge::Tool) -> serde_json::Value {
         Tool::RunCommand { command } => {
             meta["command"] = json!(command);
         }
+        Tool::McpCall { server, tool, .. } => {
+            meta["server"] = json!(server);
+            meta["mcp_tool"] = json!(tool);
+        }
         Tool::GitStatus | Tool::DescribeTool { .. } | Tool::ListTools => {}
     }
     if let Some(detail) = crate::bridge::detail(tool) {
@@ -159,6 +163,20 @@ fn parse_tool_call_v2(
     tool_name: &str,
     args: &serde_json::Value,
 ) -> Result<crate::bridge::Tool, String> {
+    // Namespaced MCP wire name (`mcp__<server>__<tool>`): the read_only
+    // flag comes from the server's cached `annotations.readOnlyHint`
+    // (unknown → false → the call goes through Always approval).
+    if tool_name.starts_with("mcp__") {
+        let (server, tool) = crate::mcp::McpManager::parse_wire_name(tool_name)
+            .ok_or_else(|| format!("bad MCP tool name: {tool_name}"))?;
+        let read_only = crate::mcp::manager().tool_is_read_only(&server, &tool);
+        return Ok(crate::bridge::Tool::McpCall {
+            server,
+            tool,
+            args: args.clone(),
+            read_only,
+        });
+    }
     let spec = crate::bridge::spec_by_name(tool_name)
         .ok_or_else(|| format!("unknown tool: {tool_name}"))?;
     let str_arg = |key: &str| -> Result<String, String> {
@@ -196,6 +214,17 @@ fn parse_tool_call_v2(
             name: str_arg("name")?,
         }),
         "list_tools" => Ok(crate::bridge::Tool::ListTools),
+        "mcp_call" => {
+            let server = str_arg("server")?;
+            let tool = str_arg("tool")?;
+            let read_only = crate::mcp::manager().tool_is_read_only(&server, &tool);
+            Ok(crate::bridge::Tool::McpCall {
+                server,
+                tool,
+                args: args.get("args").cloned().unwrap_or(serde_json::json!({})),
+                read_only,
+            })
+        }
         other => Err(format!("tool not implemented: {other}")),
     }
 }
@@ -236,7 +265,18 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
         let msg = {
             let mut w = ws.lock().unwrap();
             match w.read() {
-                Ok(Message::Text(text)) => Some(text),
+                Ok(Message::Text(text)) => {
+                    // Hard frame cap: a multi-GB paste must not OOM the
+                    // app. 10 MB is far above any legitimate tool call.
+                    if text.len() > 10 * 1024 * 1024 {
+                        let _ = w.send(Message::Text(
+                            json!({"type": "error", "error": "frame too large"}).to_string(),
+                        ));
+                        None
+                    } else {
+                        Some(text)
+                    }
+                }
                 Ok(Message::Close(_)) => break,
                 Ok(Message::Ping(p)) => {
                     let _ = w.send(Message::Pong(p));
@@ -347,11 +387,39 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                     }
                 };
 
+                // Server-side idempotency: the extension retries a timed-
+                // out call with the same id — if that id already reached
+                // execution, refuse the duplicate instead of running e.g.
+                // `write_file` twice.
+                let already_ran = {
+                    let state = app.state::<AppState>();
+                    crate::db::audit_has_request(&state.conn.lock().unwrap(), id)
+                        .unwrap_or(false)
+                };
+                if already_ran {
+                    let mut w = ws.lock().unwrap();
+                    let _ = w.send(Message::Text(make_tool_result_v2(
+                        id,
+                        "error",
+                        None,
+                        Some(json!({
+                            "code": "DUPLICATE_REQUEST",
+                            "message": "this request id was already executed; not running it twice",
+                        })),
+                        None,
+                    )));
+                    continue;
+                }
+
                 let ws = ws.clone();
                 let app = app.clone();
                 let id = id.to_string();
                 std::thread::spawn(move || {
-                    let result = crate::tool_call(&app, tool.clone(), "web");
+                    // Mark this thread's execution as owned by the request,
+                    // so approvals and spawned processes point back at it.
+                    crate::bridge::set_execution_owner(Some(id.clone()));
+                    let result = crate::tool_call(&app, tool.clone(), "web", Some(&id));
+                    crate::bridge::set_execution_owner(None);
                     let meta = tool_meta(&tool);
                     let (status, result_val, error_val) = if result.ok {
                         (
@@ -422,7 +490,7 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                 let ws = ws.clone();
                 let app = app.clone();
                 std::thread::spawn(move || {
-                    let result = crate::tool_call(&app, tool, "web");
+                    let result = crate::tool_call(&app, tool, "web", None);
                     let mut w = ws.lock().unwrap();
                     let _ = w.send(Message::Text(make_tool_result_v1(id, &result)));
                 });
@@ -455,7 +523,126 @@ fn handle_conn(app: AppHandle, stream: std::net::TcpStream) {
                     }
                 }
             }
-            _ => break,
+            // ── Protocol v2: cancel ─────────────────────────────────
+            // Stop the processes owned by a request and unblock its
+            // approval wait. Previously the catch-all below *dropped the
+            // connection* on cancel — the running command kept going.
+            "cancel" => {
+                let id = parsed["id"].as_str().unwrap_or("");
+                let killed = if id.is_empty() {
+                    0
+                } else {
+                    crate::process::registry().kill_task(id, std::time::Duration::from_millis(500))
+                };
+                let mut w = ws.lock().unwrap();
+                let _ = w.send(Message::Text(
+                    json!({"type": "cancel-ok", "id": id, "killed": killed}).to_string(),
+                ));
+            }
+
+            // ── lexsus-agent/1: task frames ─────────────────────────
+            // The extension (or any paired client) can create and steer
+            // tasks; state transitions are validated and persisted, so a
+            // restart sees exactly where each task stopped.
+            "task_create" => {
+                let req_id = parsed["id"].as_str().unwrap_or("").to_string();
+                let title = parsed["title"].as_str().unwrap_or("Web task").to_string();
+                let objective = parsed["objective"].as_str().unwrap_or("").to_string();
+                let reply = {
+                    let state = app.state::<AppState>();
+                    crate::task::create_task(
+                        &state.conn.lock().unwrap(),
+                        &title,
+                        &objective,
+                        "web",
+                        None,
+                    )
+                };
+                let mut w = ws.lock().unwrap();
+                let msg = match reply {
+                    Ok(t) => json!({"type": "task_result", "id": req_id, "ok": true, "task": t}),
+                    Err(e) => json!({"type": "task_result", "id": req_id, "ok": false, "error": e.to_string()}),
+                };
+                let _ = w.send(Message::Text(msg.to_string()));
+            }
+
+            "task_status" => {
+                let req_id = parsed["id"].as_str().unwrap_or("").to_string();
+                let task_id = parsed["task_id"].as_str().unwrap_or("");
+                let reply = {
+                    let state = app.state::<AppState>();
+                    crate::task::get_task(&state.conn.lock().unwrap(), task_id)
+                };
+                let mut w = ws.lock().unwrap();
+                let msg = match reply {
+                    Ok(t) => json!({"type": "task_result", "id": req_id, "ok": true, "task": t}),
+                    Err(e) => json!({"type": "task_result", "id": req_id, "ok": false, "error": e.to_string()}),
+                };
+                let _ = w.send(Message::Text(msg.to_string()));
+            }
+
+            "task_pause" | "task_resume" | "task_cancel" => {
+                let req_id = parsed["id"].as_str().unwrap_or("").to_string();
+                let task_id = parsed["task_id"].as_str().unwrap_or("").to_string();
+                let to = match ty {
+                    "task_pause" => crate::task::TaskState::Paused,
+                    "task_resume" => crate::task::TaskState::Executing,
+                    _ => {
+                        // Cancellation: stop owned processes first, then
+                        // walk the machine through `cancelling`.
+                        crate::process::registry()
+                            .kill_task(&task_id, std::time::Duration::from_millis(500));
+                        let state = app.state::<AppState>();
+                        let _ = crate::task::transition(
+                            &state.conn.lock().unwrap(),
+                            &task_id,
+                            crate::task::TaskState::Cancelling,
+                            "cancel requested over ws",
+                        );
+                        crate::task::TaskState::Cancelled
+                    }
+                };
+                let reply = {
+                    let state = app.state::<AppState>();
+                    crate::task::transition(
+                        &state.conn.lock().unwrap(),
+                        &task_id,
+                        to,
+                        &format!("{ty} over ws"),
+                    )
+                };
+                let mut w = ws.lock().unwrap();
+                let msg = match reply {
+                    Ok(t) => json!({"type": "task_result", "id": req_id, "ok": true, "task": t}),
+                    Err(e) => json!({"type": "task_result", "id": req_id, "ok": false, "error": e.to_string()}),
+                };
+                let _ = w.send(Message::Text(msg.to_string()));
+            }
+
+            // ── MCP: dynamic tool list for the extension ────────────
+            // The extension registers these as namespaced tools
+            // (`mcp__server__tool`) so a web AI can call them directly.
+            "mcp_tools" => {
+                let tools = crate::mcp::manager().list_tools();
+                let mut w = ws.lock().unwrap();
+                let _ = w.send(Message::Text(
+                    json!({"type": "mcp_tools", "tools": tools}).to_string(),
+                ));
+            }
+
+            // Unknown frames get a clear error instead of a dropped
+            // connection — a typo must not kill the session.
+            other => {
+                eprintln!("[ws] unknown frame type: {other}");
+                let mut w = ws.lock().unwrap();
+                let _ = w.send(Message::Text(
+                    json!({
+                        "type": "error",
+                        "error": format!("unknown frame type: {other}"),
+                    })
+                    .to_string(),
+                ));
+            }
         }
     }
 

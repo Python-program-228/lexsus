@@ -152,7 +152,88 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
             ON session_events(session_id, ts_ms);
         "#,
     ),
+    (
+        // Agent Runtime (Phase 1): the task entity, its validated state
+        // history, the child-process registry mirror, and a wire-level
+        // request id on audit rows so an extension retry can be
+        // correlated with (and deduplicated against) the original call.
+        "0006_agent_runtime",
+        r#"
+        CREATE TABLE IF NOT EXISTS tasks (
+            id          TEXT PRIMARY KEY,
+            title       TEXT NOT NULL,
+            objective   TEXT NOT NULL DEFAULT '',
+            source      TEXT NOT NULL DEFAULT 'web',
+            state       TEXT NOT NULL DEFAULT 'created',
+            session_id  INTEGER,
+            meta        TEXT NOT NULL DEFAULT '{}',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS task_state_transitions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id     TEXT NOT NULL REFERENCES tasks(id),
+            from_state  TEXT,
+            to_state    TEXT NOT NULL,
+            reason      TEXT NOT NULL DEFAULT '',
+            ts          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_transitions_task
+            ON task_state_transitions(task_id, id);
+
+        CREATE TABLE IF NOT EXISTS processes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            pid         INTEGER NOT NULL,
+            kind        TEXT NOT NULL,
+            label       TEXT NOT NULL DEFAULT '',
+            task_id     TEXT,
+            started_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            exited_at   TEXT,
+            exit_code   INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_processes_task
+            ON processes(task_id);
+
+        ALTER TABLE audit_log ADD COLUMN request_id TEXT;
+
+        CREATE INDEX IF NOT EXISTS idx_audit_log_request
+            ON audit_log(request_id) WHERE request_id IS NOT NULL;
+        "#,
+    ),
 ];
+
+/// Apply every pending migration to an already-open connection (used by
+/// in-memory test databases, which have no path for `open_and_migrate`).
+pub fn open_and_migrate_into(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version     TEXT PRIMARY KEY,
+            applied_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )?;
+    for (version, sql) in MIGRATIONS {
+        let applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+                [version],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if !applied {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(sql)?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                [version],
+            )?;
+            tx.commit()?;
+        }
+    }
+    Ok(())
+}
 
 /// Open (or create) the database and apply any pending migrations.
 pub fn open_and_migrate(path: &Path) -> rusqlite::Result<Connection> {
@@ -267,11 +348,55 @@ pub fn record_audit(
     allowed: bool,
     approved_by: &str,
     ok: bool,
+    request_id: Option<&str>,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO audit_log (agent, tool, args, allowed, approved_by, ok)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        (agent, tool, args, allowed as i64, approved_by, ok as i64),
+        "INSERT INTO audit_log (agent, tool, args, allowed, approved_by, ok, request_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            agent,
+            tool,
+            args,
+            allowed as i64,
+            approved_by,
+            ok as i64,
+            request_id,
+        ),
+    )?;
+    Ok(())
+}
+
+/// Idempotency check: has this wire request id already been executed?
+/// The extension retries timed-out calls with the same id; without this
+/// gate a retried `write_file` would run twice.
+pub fn audit_has_request(conn: &Connection, request_id: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM audit_log WHERE request_id = ?1)",
+        [request_id],
+        |row| row.get(0),
+    )
+}
+
+/// Mirror a process-registry entry into the `processes` table.
+pub fn record_process_start(
+    conn: &Connection,
+    pid: u32,
+    kind: &str,
+    label: &str,
+    task_id: Option<&str>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO processes (pid, kind, label, task_id) VALUES (?1, ?2, ?3, ?4)",
+        (pid, kind, label, task_id),
+    )?;
+    Ok(())
+}
+
+pub fn record_process_exit(conn: &Connection, pid: u32, exit_code: Option<i64>) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE processes SET exited_at = datetime('now'), exit_code = ?2
+         WHERE pid = ?1 AND exited_at IS NULL",
+        (pid, exit_code),
     )?;
     Ok(())
 }
