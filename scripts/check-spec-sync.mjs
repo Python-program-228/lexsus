@@ -174,7 +174,11 @@ if (S.parseToolLine(FOOTER) !== null) {
 // core rejects the target; miss content-any.js's selector maps and the content
 // script loads but captures nothing.
 const bg = readFileSync(`${ROOT}/extension/background.js`, "utf8");
-const contentAny = readFileSync(`${ROOT}/extension/content-any.js`, "utf8");
+// Phase 1: per-host selectors live in chat-adapters.js (ADAPTERS), the
+// shared logic in content-core.js; content.js/content-any.js are thin
+// boot wrappers.
+const adapters = readFileSync(`${ROOT}/extension/chat-adapters.js`, "utf8");
+const contentCore = readFileSync(`${ROOT}/extension/content-core.js`, "utf8");
 const popup = readFileSync(`${ROOT}/extension/popup.js`, "utf8");
 const libRs = readFileSync(`${ROOT}/src-tauri/src/lib.rs`, "utf8");
 const extManifest = JSON.parse(readFileSync(`${ROOT}/extension/manifest.json`, "utf8"));
@@ -237,18 +241,19 @@ for (const [name, pattern] of Object.entries(targetHosts)) {
   }
 }
 
-// content-any.js covers everything except chatgpt.com, which has content.js.
-const anyHosts = hosts.filter((h) => h !== "chatgpt");
-for (const map of ["const COMPS", "const SUBMIT", "const MESSAGES"]) {
-  const keys = keysOf(block(contentAny, map));
-  const missing = anyHosts.filter((h) => !keys.includes(h));
-  if (missing.length) {
-    problems.push(`content-any.js ${map.slice(6)} missing: ${missing.join(", ")}`);
+// chat-adapters.js must carry an adapter (with a messageSelector for
+// scanning) for every supported host.
+for (const h of hosts) {
+  const adapterBlock = block(adapters, `${h}: makeAdapter`);
+  if (!adapterBlock) {
+    problems.push(`chat-adapters.js has no adapter for ${h}`);
+    continue;
   }
-}
-for (const h of anyHosts) {
-  if (!contentAny.includes(`return "${h}"`)) {
-    problems.push(`content-any.js host detector never returns "${h}"`);
+  if (!adapterBlock.includes("messageSelector")) {
+    problems.push(`chat-adapters.js ${h} adapter has no messageSelector`);
+  }
+  if (!adapters.includes(`return ADAPTERS.${h}`)) {
+    problems.push(`chat-adapters.js detect() never returns "${h}"`);
   }
 }
 
@@ -257,12 +262,11 @@ for (const h of hosts) {
   if (!popup.includes(`"${h}"`)) problems.push(`popup.js cannot resolve a tab to ${h}`);
 }
 
-// A handoff card labels the target by name in both content scripts.
-for (const file of ["content.js", "content-any.js"]) {
-  const src = readFileSync(`${ROOT}/extension/${file}`, "utf8");
-  const labels = keysOf(block(src, "const TARGET_LABEL"));
+// A handoff card labels the target by name in the shared content core.
+{
+  const labels = keysOf(block(contentCore, "const TARGET_LABEL"));
   const missing = hosts.filter((h) => !labels.includes(h));
-  if (missing.length) problems.push(`${file} TARGET_LABEL missing: ${missing.join(", ")}`);
+  if (missing.length) problems.push(`content-core.js TARGET_LABEL missing: ${missing.join(", ")}`);
 }
 
 console.log(`web-AI hosts:       ${hosts.join(", ")}`);
