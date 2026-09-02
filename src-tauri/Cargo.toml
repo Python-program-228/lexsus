@@ -32,3 +32,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tungstenite = "0.24"
 # Pairing codes come from the OS CSPRNG (clock-derived codes were guessable).
 getrandom = "0.2"
+
+# Process-group signals for the registry's TERM→KILL tree kill (unix).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
