@@ -17,13 +17,13 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["tool-spec.js", "ui-components.js", "content.js"],
+      "js": ["tool-spec.js", "chat-adapters.js", "ui-components.js", "content-core.js", "content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://claude.ai/*", "https://gemini.google.com/*", "https://grok.com/*"],
-      "js": ["tool-spec.js", "ui-components.js", "content-any.js"],
+      "js": ["tool-spec.js", "chat-adapters.js", "ui-components.js", "content-core.js", "content-any.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
     }

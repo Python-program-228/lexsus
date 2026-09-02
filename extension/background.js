@@ -23,6 +23,8 @@ const TARGET_HOSTS = {
 
 // ── Request tracking ──────────────────────────────────────────────
 const pendingRequests = new Map(); // id → { tool, timestamp, retries, timeout, tabId }
+// Latest MCP tool list pushed by the app (replayed to tabs on demand).
+let mcpTools = [];
 const MAX_RETRIES = 1;
 const REQUEST_TTL_MS = 60000;
 
@@ -307,6 +309,9 @@ function connect() {
         paired = true;
         serverVersion = msg.server_version || null;
         statusUpdate();
+        // Ask for the app's MCP tool list right away so the AI's manifest
+        // can include namespaced mcp__* tools.
+        socket.send(JSON.stringify({ type: "mcp_tools" }));
         break;
       case "pair-error":
         paired = false;
@@ -319,14 +324,38 @@ function connect() {
 
       // ── Protocol v2: tool_result ────────────────────────────
       case "tool_result": {
-        // Track the request if we have it
-        if (msg.id && pendingRequests.has(msg.id)) {
+        // "pending" is informational (the app now sends it as soon as a
+        // call parks on a user approval): the request is still alive, so
+        // keep the timeout watchdog running until the FINAL result.
+        if (msg.status !== "pending" && msg.id && pendingRequests.has(msg.id)) {
           untrackRequest(msg.id);
         }
         recordOutcome(msg.id, msg.status, msg.result?.output ?? msg.error?.message);
         forwardToTabs(msg, null);
         break;
       }
+
+      // ── Protocol v2: tool_stream (live command output) ──────
+      case "tool_stream":
+        forwardToTabs(msg, null);
+        break;
+
+      // ── MCP: live tool list from the app ─────────────────────
+      case "mcp_tools": {
+        if (Array.isArray(msg.tools)) {
+          mcpTools = msg.tools;
+          // Register in the service worker's own tool-spec copy too, so
+          // per-tool timeouts (trackRequest) apply to MCP calls.
+          globalThis.ACBToolSpec?.registerMcpTools(msg.tools);
+        }
+        forwardToTabs(msg, null);
+        break;
+      }
+
+      // ── lexsus-agent/1: task state changed in the app ────────
+      case "task_result":
+        forwardToTabs(msg, null);
+        break;
 
       // ── Protocol v1: tool-result (legacy) ───────────────────
       case "tool-result": {
@@ -471,6 +500,54 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, error: "not paired" });
       }
       break;
+
+    // ── Protocol v2: cancel ────────────────────────────────────
+    // The content script asks to abort a running tool call; the app
+    // kills the processes owned by that request id.
+    case "cancel": {
+      if (socket && socket.readyState === WebSocket.OPEN && paired) {
+        socket.send(JSON.stringify({ type: "cancel", id: msg.id }));
+        sendResponse({ ok: true });
+      } else {
+        sendResponse({ ok: false, error: "not paired" });
+      }
+      break;
+    }
+
+    // ── MCP tools for the content scripts ──────────────────────
+    // Reply with the cached list immediately; ask the app for a fresh
+    // one in the background (the reply arrives as an "mcp_tools" frame
+    // and is forwarded to tabs).
+    case "get-mcp-tools": {
+      if (socket && socket.readyState === WebSocket.OPEN && paired) {
+        socket.send(JSON.stringify({ type: "mcp_tools" }));
+      }
+      sendResponse(mcpTools);
+      break;
+    }
+
+    // ── lexsus-agent/1: task control relay ─────────────────────
+    case "task_create":
+    case "task_status":
+    case "task_pause":
+    case "task_resume":
+    case "task_cancel": {
+      if (socket && socket.readyState === WebSocket.OPEN && paired) {
+        socket.send(
+          JSON.stringify({
+            type: msg.type,
+            id: msg.id || generateId(),
+            task_id: msg.task_id,
+            title: msg.title,
+            objective: msg.objective,
+          }),
+        );
+        sendResponse({ ok: true });
+      } else {
+        sendResponse({ ok: false, error: "not paired" });
+      }
+      break;
+    }
 
     // Prime an already-open chat with the tool manifest. Without this the
     // tool list only ever reaches a chat that received a handoff.

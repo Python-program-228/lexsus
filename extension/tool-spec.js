@@ -149,9 +149,31 @@
       lineArgs: [],
       stage: { verb: "Fetching", noun: "the tool list" },
     },
+    {
+      // Generic MCP call. Concrete MCP tools are registered at runtime as
+      // `mcp__<server>__<tool>` (see registerMcpTools below); this row is
+      // the manifest/SPECS-sync anchor for the generic form.
+      name: "mcp_call",
+      variant: "McpCall",
+      aliases: ["mcp", "call_mcp"],
+      args: [
+        { name: "server", required: true },
+        { name: "tool", required: true },
+        { name: "args", required: false },
+      ],
+      summary: "Call a tool on a connected MCP server (e.g. MacOS-MCP)",
+      group: "MCP",
+      approval: "always",
+      autoInsert: false,
+      timeoutMs: 60000,
+      // JSON-block only: no one-line syntax. A line regex for a generic
+      // "call anything" tool would be an arbitrary-code-execution magnet
+      // for prompt injection.
+      stage: { verb: "Calling", arg: "tool", fallback: "MCP tool" },
+    },
   ];
 
-  const GROUPS = ["Reading", "Editing", "Commands", "Search", "Git", "Planning", "Meta"];
+  const GROUPS = ["Reading", "Editing", "Commands", "Search", "Git", "Planning", "Meta", "MCP"];
 
   // ── Indexes ─────────────────────────────────────────────────────
   const BY_NAME = new Map();
@@ -464,8 +486,10 @@
 
   /** Read-only result the content script can paste into the composer. */
   function isAutoInsert(name) {
+    // Read the spec's flag directly rather than the static AUTO_INSERT set
+    // so MCP tools registered at runtime (registerMcpTools) work too.
     const spec = specByName(name);
-    return spec ? AUTO_INSERT.has(spec.name) : false;
+    return spec ? spec.autoInsert === true : false;
   }
 
   /** Per-tool request timeout for the service worker. */
@@ -493,6 +517,37 @@
     return `${s.slice(0, COMPOSER_CAP)}\n\n[truncated at ${COMPOSER_CAP} of ${s.length} bytes]`;
   }
 
+  /**
+   * Register tools reported by connected MCP servers (ws `mcp_tools`
+   * frame). Each becomes a first-class spec named `mcp__<server>__<tool>`,
+   * so parsing, timeouts and the approval UI treat it like any built-in.
+   * Approval follows the server's `annotations.readOnlyHint` (read_only):
+   * read-only → auto, everything else → always. Safe to call repeatedly.
+   */
+  function registerMcpTools(tools) {
+    let added = 0;
+    for (const t of tools || []) {
+      if (!t || !t.wire_name || BY_NAME.has(t.wire_name)) continue;
+      const spec = {
+        name: t.wire_name,
+        variant: null,
+        aliases: [],
+        args: [],
+        summary: t.description || `MCP tool ${t.wire_name}`,
+        group: "MCP",
+        approval: t.read_only ? "auto" : "always",
+        autoInsert: !!t.read_only,
+        timeoutMs: 60000,
+        mcp: { server: t.server, tool: t.name, readOnly: !!t.read_only },
+        stage: { verb: "Calling", arg: null, fallback: t.wire_name },
+      };
+      TOOLS.push(spec);
+      BY_NAME.set(spec.name, spec);
+      added++;
+    }
+    return added;
+  }
+
   globalThis.ACBToolSpec = {
     TOOLS,
     GROUPS,
@@ -513,5 +568,6 @@
     isAutoInsert,
     timeoutFor,
     capForComposer,
+    registerMcpTools,
   };
 })();
